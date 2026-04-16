@@ -225,12 +225,18 @@ export default function App() {
     const p = generatePlan(pd);
     setPlan(p);
     setResults(r);
-    const sub = { id: Date.now(), timestamp: new Date().toISOString(), name, email,
-      gatewayWhy: pd.gatewayWhy, gatewayTag: pd.gatewayTag, total: r.total,
-      dimensions: r.dimensions, severity: sev.label,
-      prescription: `${sev.level}, ${sev.days}`, lembke: r.lembke, context: pd.context, plan: p };
-    await saveSubmission(sub);
+    // Show results IMMEDIATELY — don't wait for database
     setMode("results");
+    // Save in background — if it fails, user still sees their results
+    try {
+      const sub = { id: Date.now(), timestamp: new Date().toISOString(), name, email,
+        gatewayWhy: pd.gatewayWhy, gatewayTag: pd.gatewayTag, total: r.total,
+        dimensions: r.dimensions, severity: sev.label,
+        prescription: `${sev.level}, ${sev.days}`, lembke: r.lembke, context: pd.context, plan: p };
+      await saveSubmission(sub);
+    } catch (e) {
+      console.error("Save failed (results still shown):", e);
+    }
   }
 
   function reset() {
@@ -440,6 +446,72 @@ export default function App() {
         <div style={{ fontSize: 11, color: S.gold, letterSpacing: 2, marginBottom: 12 }}>\u25cf YOUR PERSONALIZED PLAN</div>
         <div style={{ ...S.h1, fontSize: 15, lineHeight: 1.8, whiteSpace: "pre-wrap" }}>{plan}</div>
       </div>}
+
+      {/* 14-DAY FASTING SCHEDULE */}
+      {results && (() => {
+        const fastDays = results.total <= 25
+          ? [{ d: "Day 1\u20133", title: "Notification Fast", desc: "Turn off all non-essential notifications. Keep calls and family messages only. Observe your reach-for-phone reflex.", level: 1 }]
+          : results.total <= 45
+          ? [
+              { d: "Day 1\u20132", title: "Notification Fast", desc: "Turn off all non-essential notifications across every device. Notice how often your hand reaches for the phone.", level: 1 },
+              { d: "Day 3\u20135", title: "App Fast", desc: "Remove social media and news apps from your phone. Access only via laptop browser at one scheduled time per day.", level: 2 },
+              { d: "Day 6\u20137", title: "Integration", desc: "Review what you learned. Which apps did you miss? Which didn\u2019t you? Begin drafting your Digital Constitution.", level: 0 },
+            ]
+          : results.total <= 65
+          ? [
+              { d: "Day 1", title: "Notification Fast", desc: "Turn off ALL notifications except phone calls and family DMs. Removes 70\u201380% of daily interruptions.", level: 1 },
+              { d: "Day 2\u20134", title: "App Fast", desc: "Remove social media, news, and shopping apps from your phone. Access only via browser on laptop at set times.", level: 2 },
+              { d: "Day 5\u20137", title: "Time-Box Fast", desc: "All digital consumption in 3 pre-set windows per day. Outside windows, phone goes in a drawer.", level: 3 },
+              { d: "Day 8\u201310", title: "Deep Time-Box", desc: "Reduce to 2 digital windows. Add 45-minute focus blocks with zero interruptions. Journal each evening.", level: 3 },
+              { d: "Day 11\u201312", title: "Quiet Period", desc: "48 hours of near-total digital abstinence. Only essential calls. No email, no news, no streaming.", level: 4 },
+              { d: "Day 13\u201314", title: "Reintroduction", desc: "Add back ONE tool at a time with written rules. Does this serve my values? Is this the best way?", level: 0 },
+            ]
+          : [
+              { d: "Day 1", title: "Notification Fast", desc: "Kill ALL notifications. Only family calls get through. Remove phone from bedroom tonight.", level: 1 },
+              { d: "Day 2\u20133", title: "App Fast", desc: "Delete social media, news, shopping, and entertainment apps. Not log out \u2014 delete. Access only via laptop at one window per day.", level: 2 },
+              { d: "Day 4\u20136", title: "Time-Box Fast", desc: "All digital use in 3 daily windows (max 30 min each). Between windows, phone in another room. Start your Dopamine Menu.", level: 3 },
+              { d: "Day 7\u20138", title: "Meeting + Channel Fast", desc: "Cancel 50% of meetings. Mute all but top 3 Slack channels. Single-tab browser policy. Rebuild sustained attention.", level: 3 },
+              { d: "Day 9\u201310", title: "Deep Time-Box", desc: "Reduce to 2 digital windows. 60-minute phone-free focus blocks. Journal each evening: what felt different?", level: 3 },
+              { d: "Day 11\u201313", title: "The Quiet Period", desc: "72 hours of near-total digital abstinence. Only essential communication. This is the dopamine reset. Day 13: the calm arrives.", level: 4 },
+              { d: "Day 14", title: "Reintroduction Day", desc: "Re-take your Noorah Score. Compare before and after. Write your Digital Constitution \u2014 handwritten rules for every tool.", level: 0 },
+            ];
+
+        const lc = { 0: "#185FA5", 1: "#0F6E56", 2: "#BA7517", 3: "#D85A30", 4: "#A32D2D" };
+        const ln = { 0: "Reset", 1: "Level 1", 2: "Level 2", 3: "Level 3", 4: "Level 4" };
+
+        return (
+          <div style={{ borderRadius: 12, border: "1px solid #ddd", padding: "20px 24px", marginBottom: 16 }}>
+            <div style={{ fontSize: 11, color: S.gold, letterSpacing: 2, marginBottom: 4 }}>YOUR 14-DAY DIGITAL FAST</div>
+            <div style={{ ...S.h1, fontSize: 18, marginBottom: 4 }}>Day-by-day schedule</div>
+            <div style={{ fontSize: 13, color: S.sub, marginBottom: 16, lineHeight: 1.5 }}>
+              Prescribed for your Noorah Score of {results.total}. {results.total >= 46 ? "Follow each phase in order." : "A lighter protocol \u2014 focus on awareness and small wins."}
+            </div>
+            {fastDays.map((day, i) => (
+              <div key={i} style={{ display: "flex", gap: 14, marginBottom: 14, alignItems: "flex-start" }}>
+                <div style={{ width: 44, flexShrink: 0, textAlign: "center" }}>
+                  <div style={{ width: 44, height: 44, borderRadius: 10, background: lc[day.level] + "18", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <span style={{ fontSize: 10, fontWeight: 500, color: lc[day.level] }}>{ln[day.level]}</span>
+                  </div>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                    <span style={{ fontSize: 13, fontWeight: 500, color: S.gold }}>{day.d}</span>
+                    <span style={{ fontSize: 14, fontWeight: 500 }}>{day.title}</span>
+                  </div>
+                  <p style={{ fontSize: 13, color: "#666", lineHeight: 1.6, margin: 0 }}>{day.desc}</p>
+                </div>
+              </div>
+            ))}
+            {results.total >= 46 && (
+              <div style={{ marginTop: 12, padding: "12px 16px", background: "#FDF6E9", borderRadius: 8 }}>
+                <div style={{ fontSize: 12, color: "#BA7517", lineHeight: 1.6 }}>
+                  <strong>The withdrawal arc:</strong> Days 1\u20133 restlessness. Days 4\u20137 boredom and irritability peak. Days 8\u201310 the calm arrives. Days 11\u201314 is the transformation \u2014 clarity, better sleep, deeper focus.
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       <div style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 10 }}>Dimension breakdown</div>
