@@ -331,6 +331,7 @@ export default function App() {
   const [screentimeData, setScreentimeData] = useState(null);
   const [scores, setScores] = useState(null);
   const [plan, setPlan] = useState("");
+  const [errorDetails, setErrorDetails] = useState("");
   const [loadingQuoteIdx, setLoadingQuoteIdx] = useState(0);
   const [adminPw, setAdminPw] = useState("");
   const [subs, setSubs] = useState([]);
@@ -443,12 +444,27 @@ ${followupContext ? "\nFOLLOW-UP CONTEXT:\n"+followupContext : ""}
 Write their plan now. Reference their specific words and numbers. NO markdown bold, NO markdown italic, NO hashtags except ### for sections.`;
     try {
       const res = await fetch("/api/chat", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ system:PLAN_PROMPT, messages:[{role:"user",content:ctx}] }) });
+      if (!res.ok) throw new Error(`API returned ${res.status}`);
       const data = await res.json();
-      const text = cleanText(data.text || "Plan generation failed. Please refresh.");
+      if (data.error || !data.text) throw new Error(data.error || "Empty response from plan generator");
+      const text = cleanText(data.text);
+      if (text.length < 200) throw new Error("Plan output too short");
       setPlan(text);
       saveSubmission({ id:Date.now(), timestamp:new Date().toISOString(), name, email, gatewayWhy:ans.p1_lastnight||"", total:scores.total, dimensions:scores.dims, severity:scores.sev, prescription:scores.fast, lembke:scores.mk, context:{ living:Q.p2_context.o1?.[ans.p2_context?.a]||"", work:Q.p2_context.o2?.[ans.p2_context?.b]||"", lostActivity:ans.p2_analog||"" }, plan:text }).catch(()=>{});
       setMode("plan");
-    } catch(e) { setPlan("Something went wrong. Please refresh and try again."); setMode("plan"); }
+    } catch(e) {
+      console.error("Plan generation failed:", e);
+      // Save the failed attempt so admin knows to regenerate
+      saveSubmission({ id:Date.now(), timestamp:new Date().toISOString(), name, email, gatewayWhy:ans.p1_lastnight||"", total:scores.total, dimensions:scores.dims, severity:scores.sev, prescription:scores.fast, lembke:scores.mk, context:{ living:Q.p2_context.o1?.[ans.p2_context?.a]||"", work:Q.p2_context.o2?.[ans.p2_context?.b]||"", lostActivity:ans.p2_analog||"" }, plan:`[ERROR — needs manual regeneration] ${e.message||"Unknown"}` }).catch(()=>{});
+      setErrorDetails(e.message || "Unknown error");
+      setMode("error");
+    }
+  }
+
+  async function retryPlan() {
+    setErrorDetails("");
+    setPlan("");
+    setMode("generating");
   }
 
   function renderPlan() {
@@ -459,24 +475,149 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
       const body = lines.slice(1).join("\n").trim();
       const isPhase = title?.toLowerCase().includes("phase");
       const isNumbers = title?.toLowerCase().includes("number");
-      const fmt = (text) => text.split("\n").map((line, j) => {
-        const dm = line.match(/^Day\s+(\d+):\s*(.*)/);
-        const pm = line.match(/^>\s*(.*)/);
-        const rule = line.match(/^(\d+)\.\s+(.*)/);
-        if (dm) return (<div key={j} style={{marginTop:18, marginBottom:2, display:"flex", gap:12, alignItems:"flex-start"}}><span style={{fontFamily:F.display, fontSize:32, color:C.orange, lineHeight:1, minWidth:44}}>{dm[1].padStart(2,"0")}</span><div style={{flex:1}}><div style={{fontFamily:F.serif, fontSize:16, lineHeight:1.7, color:C.ink}}>{dm[2]}</div></div></div>);
-        if (pm) return (<div key={j} style={{fontFamily:F.serif, fontStyle:"italic", fontSize:14, color:C.muted, marginBottom:14, marginLeft:56, paddingLeft:12, borderLeft:`2px solid ${C.orange}`, lineHeight:1.6}}>{pm[1]}</div>);
-        if (rule) return (<div key={j} style={{display:"flex", gap:12, padding:"10px 0", borderBottom:`0.5px solid ${C.border}`}}><span style={{fontFamily:F.display, fontSize:24, color:C.orange, minWidth:28, lineHeight:1}}>{rule[1].padStart(2,"0")}</span><div style={{fontFamily:F.serif, fontSize:15, lineHeight:1.6, color:C.ink, flex:1}}>{rule[2]}</div></div>);
-        if (line.trim() === "") return <div key={j} style={{height:6}}/>;
-        if (line.startsWith("-")) return (<div key={j} style={{fontFamily:F.serif, fontSize:15, lineHeight:1.8, color:C.ink, marginBottom:4, paddingLeft:16, position:"relative"}}><span style={{position:"absolute", left:0, color:C.orange, fontFamily:F.mono, fontSize:12}}>→</span>{line.replace(/^-\s*/, "")}</div>);
-        if (line.match(/^When you.*:$/i)) return <div key={j} style={{fontFamily:F.mono, fontSize:10, letterSpacing:2, textTransform:"uppercase", color:C.orange, fontWeight:600, margin:"16px 0 8px", paddingTop:12, borderTop:`0.5px solid ${C.border}`}}>{line}</div>;
-        return <div key={j} style={{fontFamily:F.serif, fontSize:15, lineHeight:1.8, color:C.ink, marginBottom:4}}>{line}</div>;
-      });
+
+      // Parse body — detect three-part cards and other structures
+      const fmt = (text) => {
+        const rawLines = text.split("\n");
+        const elements = [];
+        let currentCard = null; // {day, move, why, notice}
+        let introText = []; // Text before first card
+
+        const flushCard = () => {
+          if (!currentCard) return;
+          const card = currentCard;
+          currentCard = null;
+          elements.push(
+            <div key={`card-${card.day}`} style={{marginBottom:16, padding:"16px 18px", background:C.card, border:`0.5px solid ${C.border}`, borderLeft:`3px solid ${C.orange}`}}>
+              <div style={{display:"flex", alignItems:"baseline", gap:12, marginBottom:10}}>
+                <span style={{fontFamily:F.display, fontSize:28, color:C.orange, lineHeight:1}}>{String(card.day).padStart(2,"0")}</span>
+                <span style={{fontFamily:F.mono, fontSize:9, letterSpacing:3, color:C.muted, textTransform:"uppercase"}}>Day {card.day}</span>
+              </div>
+              {card.move && (
+                <div style={{marginBottom:10}}>
+                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2, color:C.orange, fontWeight:600, marginBottom:3}}>MOVE</div>
+                  <div style={{fontFamily:F.serif, fontSize:15.5, lineHeight:1.6, color:C.ink}}>{card.move}</div>
+                </div>
+              )}
+              {card.why && (
+                <div style={{marginBottom:10}}>
+                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2, color:C.orange, fontWeight:600, marginBottom:3}}>WHY</div>
+                  <div style={{fontFamily:F.serif, fontSize:14, fontStyle:"italic", lineHeight:1.5, color:C.ink}}>{card.why}</div>
+                </div>
+              )}
+              {card.notice && (
+                <div>
+                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2, color:C.orange, fontWeight:600, marginBottom:3}}>NOTICE</div>
+                  <div style={{fontFamily:F.serif, fontSize:14, lineHeight:1.5, color:C.muted}}>{card.notice}</div>
+                </div>
+              )}
+            </div>
+          );
+        };
+
+        const flushIntro = () => {
+          if (introText.length === 0) return;
+          const text = introText.join(" ").trim();
+          introText = [];
+          if (text) elements.push(
+            <div key={`intro-${elements.length}`} style={{fontFamily:F.serif, fontSize:15, lineHeight:1.8, color:C.ink, marginBottom:20, fontStyle:"italic"}}>{text}</div>
+          );
+        };
+
+        for (let j = 0; j < rawLines.length; j++) {
+          const line = rawLines[j].trim();
+          if (!line) continue;
+
+          const dayMatch = line.match(/^Day\s+(\d+)\s*$/);
+          const dayInline = line.match(/^Day\s+(\d+):\s*(.*)/);
+          const moveMatch = line.match(/^MOVE:?\s*(.*)/i);
+          const whyMatch = line.match(/^WHY:?\s*(.*)/i);
+          const noticeMatch = line.match(/^NOTICE:?\s*(.*)/i);
+          const ruleMatch = line.match(/^(\d+)\.\s+(.*)/);
+          const bulletMatch = line.startsWith("-");
+          const menuHeaderMatch = line.match(/^When you.*:$/i);
+
+          if (dayMatch) {
+            flushCard(); flushIntro();
+            currentCard = { day: parseInt(dayMatch[1]), move:"", why:"", notice:"" };
+          } else if (dayInline) {
+            // Backwards compatibility: "Day 1: action" format
+            flushCard(); flushIntro();
+            currentCard = { day: parseInt(dayInline[1]), move: dayInline[2], why:"", notice:"" };
+          } else if (moveMatch && currentCard) {
+            currentCard.move = moveMatch[1];
+          } else if (whyMatch && currentCard) {
+            currentCard.why = whyMatch[1];
+          } else if (noticeMatch && currentCard) {
+            currentCard.notice = noticeMatch[1];
+          } else if (line.startsWith(">") && currentCard) {
+            // Old format reflection prompt maps to notice
+            currentCard.notice = line.replace(/^>\s*/, "");
+          } else if (ruleMatch && !currentCard) {
+            flushIntro();
+            elements.push(
+              <div key={`rule-${j}`} style={{display:"flex", gap:12, padding:"12px 0", borderBottom:`0.5px solid ${C.border}`}}>
+                <span style={{fontFamily:F.display, fontSize:24, color:C.orange, minWidth:28, lineHeight:1}}>{ruleMatch[1].padStart(2,"0")}</span>
+                <div style={{fontFamily:F.serif, fontSize:15, lineHeight:1.6, color:C.ink, flex:1}}>{ruleMatch[2]}</div>
+              </div>
+            );
+          } else if (bulletMatch) {
+            flushIntro();
+            elements.push(
+              <div key={`bullet-${j}`} style={{fontFamily:F.serif, fontSize:15, lineHeight:1.7, color:C.ink, marginBottom:6, paddingLeft:16, position:"relative"}}>
+                <span style={{position:"absolute", left:0, color:C.orange, fontFamily:F.mono, fontSize:12}}>→</span>
+                {line.replace(/^-\s*/, "")}
+              </div>
+            );
+          } else if (menuHeaderMatch) {
+            flushCard(); flushIntro();
+            elements.push(
+              <div key={`menu-${j}`} style={{fontFamily:F.mono, fontSize:10, letterSpacing:2, textTransform:"uppercase", color:C.orange, fontWeight:600, margin:"18px 0 10px", paddingTop:12, borderTop:`0.5px solid ${C.border}`}}>{line}</div>
+            );
+          } else {
+            // If we're in a card and don't match a known marker, it's likely a continuation
+            if (currentCard && !currentCard.move) {
+              currentCard.move = line;
+            } else if (!currentCard) {
+              introText.push(line);
+            }
+          }
+        }
+        flushCard();
+        flushIntro();
+        return elements;
+      };
+
       if (isNumbers && scores) {
         const topDims = Object.entries(scores.dims).sort((a,b)=>b[1].raw-a[1].raw).slice(0,3);
-        return (<div key={i} style={{marginBottom:28}}><div style={{fontFamily:F.mono, fontSize:10, fontWeight:600, letterSpacing:2, textTransform:"uppercase", color:C.orange, marginBottom:10, borderBottom:`0.5px dashed ${C.border}`, paddingBottom:8}}><Quote>{title}</Quote></div><div style={{fontFamily:F.serif, fontSize:15, lineHeight:1.8, color:C.ink}}>{fmt(body)}</div><div style={{marginTop:16, padding:"12px 16px", background:C.light, borderLeft:`2px solid ${C.orange}`}}><Lbl orange style={{display:"block", marginBottom:8, fontSize:9}}>Hover the dimension name to learn more</Lbl>{topDims.map(([k,v],idx)=>(<div key={k} style={{fontFamily:F.serif, fontSize:14, marginBottom:6, lineHeight:1.6}}><span style={{fontFamily:F.mono, fontSize:10, color:C.orange, marginRight:8}}>{String(idx+1).padStart(2,"0")}</span><PlanDim dimKey={k} score={v.raw} max={v.max} /></div>))}</div></div>);
+        return (
+          <div key={i} style={{marginBottom:28}}>
+            <div style={{fontFamily:F.mono, fontSize:10, fontWeight:600, letterSpacing:2, textTransform:"uppercase", color:C.orange, marginBottom:10, borderBottom:`0.5px dashed ${C.border}`, paddingBottom:8}}><Quote>{title}</Quote></div>
+            <div style={{fontFamily:F.serif, fontSize:15, lineHeight:1.8, color:C.ink}}>{fmt(body)}</div>
+            <div style={{marginTop:16, padding:"12px 16px", background:C.light, borderLeft:`2px solid ${C.orange}`}}>
+              <Lbl orange style={{display:"block", marginBottom:8, fontSize:9}}>Hover the dimension name to learn more</Lbl>
+              {topDims.map(([k,v],idx)=>(<div key={k} style={{fontFamily:F.serif, fontSize:14, marginBottom:6, lineHeight:1.6}}><span style={{fontFamily:F.mono, fontSize:10, color:C.orange, marginRight:8}}>{String(idx+1).padStart(2,"0")}</span><PlanDim dimKey={k} score={v.raw} max={v.max} /></div>))}
+            </div>
+          </div>
+        );
       }
-      if (isPhase) return (<details key={i} open={i<=2} style={{marginBottom:24}}><summary style={{fontFamily:F.mono, fontSize:10, fontWeight:600, letterSpacing:2, textTransform:"uppercase", color:C.orange, cursor:"pointer", marginBottom:12, borderBottom:`1.5px solid ${C.ink}`, paddingBottom:10, listStyle:"none", display:"flex", justifyContent:"space-between"}}><Quote>{title}</Quote><span style={{color:C.muted, fontWeight:400, fontSize:9, letterSpacing:1}}>TAP TO EXPAND</span></summary><div>{fmt(body)}</div></details>);
-      return (<div key={i} style={{marginBottom:28}}><div style={{fontFamily:F.mono, fontSize:10, fontWeight:600, letterSpacing:2, textTransform:"uppercase", color:C.orange, marginBottom:10, borderBottom:`0.5px dashed ${C.border}`, paddingBottom:8}}><Quote>{title}</Quote></div><div>{fmt(body)}</div></div>);
+
+      if (isPhase) return (
+        <details key={i} open={i<=2} style={{marginBottom:28}}>
+          <summary style={{fontFamily:F.mono, fontSize:10, fontWeight:600, letterSpacing:2, textTransform:"uppercase", color:C.orange, cursor:"pointer", marginBottom:16, borderBottom:`1.5px solid ${C.ink}`, paddingBottom:10, listStyle:"none", display:"flex", justifyContent:"space-between"}}>
+            <Quote>{title}</Quote>
+            <span style={{color:C.muted, fontWeight:400, fontSize:9, letterSpacing:1}}>TAP TO EXPAND/COLLAPSE</span>
+          </summary>
+          <div>{fmt(body)}</div>
+        </details>
+      );
+
+      return (
+        <div key={i} style={{marginBottom:28}}>
+          <div style={{fontFamily:F.mono, fontSize:10, fontWeight:600, letterSpacing:2, textTransform:"uppercase", color:C.orange, marginBottom:10, borderBottom:`0.5px dashed ${C.border}`, paddingBottom:8}}><Quote>{title}</Quote></div>
+          <div>{fmt(body)}</div>
+        </div>
+      );
     });
   }
 
@@ -650,6 +791,33 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
       <style>{`@keyframes f{0%,100%{opacity:.2;transform:scale(1)}50%{opacity:1;transform:scale(1.3)}}@keyframes fi{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}`}</style>
     </div>);
   }
+
+  // ═══ ERROR ═══
+  if (mode === "error") return (<div style={{...pg, maxWidth:540, display:"flex", flexDirection:"column", justifyContent:"center"}} ref={topRef}>
+    <div style={{borderTop:`2px solid ${C.orange}`, borderBottom:`0.5px dashed ${C.border}`, padding:"24px 0", marginBottom:24}}>
+      <Lbl orange style={{display:"block", marginBottom:12}}><Quote>Something interrupted us</Quote></Lbl>
+      <h2 style={{fontFamily:F.display, fontSize:42, letterSpacing:2, lineHeight:1, marginBottom:16, color:C.ink}}>A PAUSE.</h2>
+      <p style={{fontFamily:F.serif, fontSize:17, lineHeight:1.7, color:C.ink, marginBottom:12, fontStyle:"italic"}}>{name}, something interrupted your plan while it was being built. Not you. Us.</p>
+      <p style={{fontFamily:F.serif, fontSize:15, lineHeight:1.7, color:C.muted}}>
+        Your answers are saved. Your score is saved. We've been notified. Either try again right now, or your plan will arrive at <span style={{color:C.ink, fontWeight:500}}>{email}</span> within 24 hours. You don't need to do anything.
+      </p>
+    </div>
+
+    <button onClick={retryPlan} style={{...btnStyle(), background:C.orange, marginBottom:10}} onMouseEnter={e=>e.target.style.background=C.ink} onMouseLeave={e=>e.target.style.background=C.orange}>
+      Try again →
+    </button>
+
+    <button onClick={()=>{setMode("start");setName("");setEmail("");setAns({});setFollowupAnswers({});setScreentimeData(null);setScores(null);setPlan("");setErrorDetails("");setQi(0);setShowPart2Intro(false)}} style={{background:"transparent", border:`0.5px solid ${C.border}`, padding:"12px", fontFamily:F.mono, fontSize:11, letterSpacing:2, textTransform:"uppercase", color:C.muted, cursor:"pointer"}}>
+      Return to start
+    </button>
+
+    {errorDetails && (
+      <details style={{marginTop:20, fontFamily:F.mono, fontSize:10, color:C.border}}>
+        <summary style={{cursor:"pointer", letterSpacing:2}}>TECHNICAL DETAILS</summary>
+        <div style={{marginTop:8, padding:10, background:C.light, color:C.muted, lineHeight:1.6}}>{errorDetails}</div>
+      </details>
+    )}
+  </div>);
 
   // ═══ PLAN ═══
   if (mode === "plan") return (<div style={{...pg, maxWidth:620}} ref={topRef}>
