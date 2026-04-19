@@ -489,39 +489,51 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
       const isPhase = title?.toLowerCase().includes("phase");
       const isNumbers = title?.toLowerCase().includes("number");
 
-      // Parse body — detect three-part cards and other structures
+      // Parse body — detect WEEK cards (new format) with SHIFT / RHYTHM / NOTICE
       const fmt = (text) => {
         const rawLines = text.split("\n");
         const elements = [];
-        let currentCard = null; // {day, move, why, notice}
-        let introText = []; // Text before first card
+        let currentWeek = null; // {num, title, shift, rhythm:[], notice}
+        let currentSection = null; // "shift" | "rhythm" | "notice"
+        let introText = [];
 
-        const flushCard = () => {
-          if (!currentCard) return;
-          const card = currentCard;
-          currentCard = null;
+        const flushWeek = () => {
+          if (!currentWeek) return;
+          const w = currentWeek;
+          currentWeek = null;
+          currentSection = null;
           elements.push(
-            <div key={`card-${card.day}`} style={{marginBottom:16, padding:"16px 18px", background:C.card, border:`0.5px solid ${C.border}`, borderLeft:`3px solid ${C.orange}`}}>
-              <div style={{display:"flex", alignItems:"baseline", gap:12, marginBottom:10}}>
-                <span style={{fontFamily:F.display, fontSize:28, color:C.orange, lineHeight:1}}>{String(card.day).padStart(2,"0")}</span>
-                <span style={{fontFamily:F.mono, fontSize:9, letterSpacing:3, color:C.muted, textTransform:"uppercase"}}>Day {card.day}</span>
+            <div key={`week-${w.num}`} className="week-card" style={{marginBottom:22, padding:"20px 22px", background:C.card, border:`0.5px solid ${C.border}`, borderLeft:`3px solid ${C.orange}`, pageBreakInside:"avoid"}}>
+              <div style={{display:"flex", alignItems:"baseline", gap:14, marginBottom:16, paddingBottom:12, borderBottom:`0.5px dashed ${C.border}`}}>
+                <span style={{fontFamily:F.display, fontSize:40, color:C.orange, lineHeight:.9}}>0{w.num}</span>
+                <div style={{flex:1}}>
+                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:3, color:C.muted, textTransform:"uppercase", marginBottom:2}}>Week {w.num}</div>
+                  {w.title && <div style={{fontFamily:F.serif, fontSize:18, fontStyle:"italic", color:C.ink, lineHeight:1.3}}>{w.title}</div>}
+                </div>
               </div>
-              {card.move && (
-                <div style={{marginBottom:10}}>
-                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2, color:C.orange, fontWeight:600, marginBottom:3}}>MOVE</div>
-                  <div style={{fontFamily:F.serif, fontSize:15.5, lineHeight:1.6, color:C.ink}}>{card.move}</div>
+              {w.shift && (
+                <div style={{marginBottom:16}}>
+                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2.5, color:C.orange, fontWeight:600, marginBottom:5}}>THE SHIFT <span style={{color:C.muted, fontWeight:400, marginLeft:6}}>one-time</span></div>
+                  <div style={{fontFamily:F.serif, fontSize:15.5, lineHeight:1.55, color:C.ink}}>{w.shift}</div>
                 </div>
               )}
-              {card.why && (
-                <div style={{marginBottom:10}}>
-                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2, color:C.orange, fontWeight:600, marginBottom:3}}>WHY</div>
-                  <div style={{fontFamily:F.serif, fontSize:14, fontStyle:"italic", lineHeight:1.5, color:C.ink}}>{card.why}</div>
+              {w.rhythm && w.rhythm.length > 0 && (
+                <div style={{marginBottom:16}}>
+                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2.5, color:C.orange, fontWeight:600, marginBottom:5}}>DAILY RHYTHM <span style={{color:C.muted, fontWeight:400, marginLeft:6}}>every day this week</span></div>
+                  <div>
+                    {w.rhythm.map((r, rIdx) => (
+                      <div key={rIdx} style={{fontFamily:F.serif, fontSize:14.5, lineHeight:1.6, color:C.ink, marginBottom:4, paddingLeft:16, position:"relative"}}>
+                        <span style={{position:"absolute", left:0, color:C.orange, fontFamily:F.mono, fontSize:11}}>→</span>
+                        {r}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
-              {card.notice && (
+              {w.notice && (
                 <div>
-                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2, color:C.orange, fontWeight:600, marginBottom:3}}>NOTICE</div>
-                  <div style={{fontFamily:F.serif, fontSize:14, lineHeight:1.5, color:C.muted}}>{card.notice}</div>
+                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2.5, color:C.orange, fontWeight:600, marginBottom:5}}>NOTICE THIS <span style={{color:C.muted, fontWeight:400, marginLeft:6}}>sit with it all week</span></div>
+                  <div style={{fontFamily:F.serif, fontSize:14, fontStyle:"italic", lineHeight:1.55, color:C.muted}}>{w.notice}</div>
                 </div>
               )}
             </div>
@@ -538,35 +550,45 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
         };
 
         for (let j = 0; j < rawLines.length; j++) {
-          const line = rawLines[j].trim();
-          if (!line) continue;
+          const raw = rawLines[j];
+          const line = raw.trim();
+          if (!line) { currentSection = null; continue; }
 
-          const dayMatch = line.match(/^Day\s+(\d+)\s*$/);
-          const dayInline = line.match(/^Day\s+(\d+):\s*(.*)/);
-          const moveMatch = line.match(/^MOVE:?\s*(.*)/i);
-          const whyMatch = line.match(/^WHY:?\s*(.*)/i);
+          // Week header: "Week 1 — Title" or "Week 1"
+          const weekMatch = line.match(/^Week\s+(\d+)\s*[—–-]\s*(.*)$/i) || line.match(/^Week\s+(\d+)\s*$/i);
+          const shiftMatch = line.match(/^SHIFT:?\s*(.*)/i);
+          const rhythmHeader = line.match(/^RHYTHM:?\s*(.*)/i);
           const noticeMatch = line.match(/^NOTICE:?\s*(.*)/i);
+          const bulletMatch = line.startsWith("-") || line.startsWith("→");
           const ruleMatch = line.match(/^(\d+)\.\s+(.*)/);
-          const bulletMatch = line.startsWith("-");
           const menuHeaderMatch = line.match(/^When you.*:$/i);
 
-          if (dayMatch) {
-            flushCard(); flushIntro();
-            currentCard = { day: parseInt(dayMatch[1]), move:"", why:"", notice:"" };
-          } else if (dayInline) {
-            // Backwards compatibility: "Day 1: action" format
-            flushCard(); flushIntro();
-            currentCard = { day: parseInt(dayInline[1]), move: dayInline[2], why:"", notice:"" };
-          } else if (moveMatch && currentCard) {
-            currentCard.move = moveMatch[1];
-          } else if (whyMatch && currentCard) {
-            currentCard.why = whyMatch[1];
-          } else if (noticeMatch && currentCard) {
-            currentCard.notice = noticeMatch[1];
-          } else if (line.startsWith(">") && currentCard) {
-            // Old format reflection prompt maps to notice
-            currentCard.notice = line.replace(/^>\s*/, "");
-          } else if (ruleMatch && !currentCard) {
+          if (weekMatch) {
+            flushWeek(); flushIntro();
+            currentWeek = { num: parseInt(weekMatch[1]), title: (weekMatch[2] || "").trim(), shift:"", rhythm:[], notice:"" };
+            currentSection = null;
+          } else if (shiftMatch && currentWeek) {
+            currentSection = "shift";
+            if (shiftMatch[1].trim()) currentWeek.shift = shiftMatch[1].trim();
+          } else if (rhythmHeader && currentWeek) {
+            currentSection = "rhythm";
+            if (rhythmHeader[1].trim() && rhythmHeader[1].trim().startsWith("-")) {
+              currentWeek.rhythm.push(rhythmHeader[1].trim().replace(/^-\s*/, ""));
+            }
+          } else if (noticeMatch && currentWeek) {
+            currentSection = "notice";
+            if (noticeMatch[1].trim()) currentWeek.notice = noticeMatch[1].trim();
+          } else if (bulletMatch && currentWeek && currentSection === "rhythm") {
+            currentWeek.rhythm.push(line.replace(/^[-→]\s*/, ""));
+          } else if (bulletMatch && !currentWeek) {
+            flushIntro();
+            elements.push(
+              <div key={`bullet-${j}`} style={{fontFamily:F.serif, fontSize:15, lineHeight:1.7, color:C.ink, marginBottom:6, paddingLeft:16, position:"relative"}}>
+                <span style={{position:"absolute", left:0, color:C.orange, fontFamily:F.mono, fontSize:12}}>→</span>
+                {line.replace(/^[-→]\s*/, "")}
+              </div>
+            );
+          } else if (ruleMatch && !currentWeek) {
             flushIntro();
             elements.push(
               <div key={`rule-${j}`} style={{display:"flex", gap:12, padding:"12px 0", borderBottom:`0.5px solid ${C.border}`}}>
@@ -574,40 +596,34 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
                 <div style={{fontFamily:F.serif, fontSize:15, lineHeight:1.6, color:C.ink, flex:1}}>{ruleMatch[2]}</div>
               </div>
             );
-          } else if (bulletMatch) {
-            flushIntro();
-            elements.push(
-              <div key={`bullet-${j}`} style={{fontFamily:F.serif, fontSize:15, lineHeight:1.7, color:C.ink, marginBottom:6, paddingLeft:16, position:"relative"}}>
-                <span style={{position:"absolute", left:0, color:C.orange, fontFamily:F.mono, fontSize:12}}>→</span>
-                {line.replace(/^-\s*/, "")}
-              </div>
-            );
           } else if (menuHeaderMatch) {
-            flushCard(); flushIntro();
+            flushWeek(); flushIntro();
             elements.push(
               <div key={`menu-${j}`} style={{fontFamily:F.mono, fontSize:10, letterSpacing:2, textTransform:"uppercase", color:C.orange, fontWeight:600, margin:"18px 0 10px", paddingTop:12, borderTop:`0.5px solid ${C.border}`}}>{line}</div>
             );
           } else {
-            // If we're in a card and don't match a known marker, it's likely a continuation
-            if (currentCard && !currentCard.move) {
-              currentCard.move = line;
-            } else if (!currentCard) {
+            // Continuation of current section
+            if (currentWeek && currentSection === "shift") {
+              currentWeek.shift = (currentWeek.shift + " " + line).trim();
+            } else if (currentWeek && currentSection === "notice") {
+              currentWeek.notice = (currentWeek.notice + " " + line).trim();
+            } else if (!currentWeek) {
               introText.push(line);
             }
           }
         }
-        flushCard();
+        flushWeek();
         flushIntro();
         return elements;
       };
 
       // Determine which sections open by default
-      // Your Pattern + Your Numbers + Phase 1 open by default, rest collapsed
+      // Keep it minimal — only Your Pattern + Your Numbers + Week 1 open
       const titleLower = title?.toLowerCase() || "";
       const isPattern = titleLower.includes("pattern");
-      const isPhase1 = titleLower.includes("phase 1") || titleLower.includes("the fast");
+      const isWeek1 = titleLower.includes("week 1");
       const isOneThing = titleLower.includes("one thing");
-      const openByDefault = isPattern || isNumbers || isPhase1 || isOneThing;
+      const openByDefault = isPattern || isNumbers || isWeek1 || isOneThing;
 
       // Summary styling — consistent for all sections
       const summaryStyle = {
@@ -889,7 +905,16 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
       <button onClick={()=>{setMode("start");setName("");setEmail("");setAns({});setFollowupAnswers({});setScreentimeData(null);setScores(null);setPlan("");setQi(0);setShowPart2Intro(false)}} style={{flex:1, padding:14, fontFamily:F.mono, fontSize:12, letterSpacing:2, textTransform:"uppercase", background:"transparent", color:C.muted, border:`0.5px solid ${C.border}`, cursor:"pointer"}}>Done</button>
     </div>
     <Lbl className="no-print" style={{display:"block", textAlign:"center", marginTop:20, fontSize:8, color:C.border}}>Generated by Noorah · The digital intent company · {new Date().getFullYear()}</Lbl>
-    <style>{`@media print { details { page-break-inside: avoid; } details > summary { list-style: none !important; } details[open] > summary span:last-child { display: none !important; } .no-print { display: none !important; } }`}</style>
+    <style>{`
+      @media print {
+        details { page-break-inside: avoid; }
+        details > summary { list-style: none !important; }
+        details[open] > summary span:last-child { display: none !important; }
+        .no-print { display: none !important; }
+        .week-card { page-break-inside: avoid !important; break-inside: avoid !important; }
+        body { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+      }
+    `}</style>
   </div>);
 
   return null;
