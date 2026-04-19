@@ -92,12 +92,15 @@ function calc(a, screentimeData) {
   // Baseline for dimensions not directly asked (emo, val, drn)
   // Use screen time to calibrate if available, else use conservative defaults
   if (hasScreentime) {
-    const hours = screentimeData.total_minutes / 60;
+    const hours = screentimeData.total_minutes / 60; // Always daily (average if weekly view)
+    const isWeeklyView = screentimeData.view_type === "weekly";
     const topApps = (screentimeData.top_apps || []).map(a => (a.name || "").toLowerCase());
     const hasSocialHeavy = topApps.some(name => SOCIAL_APPS.some(s => name.includes(s)));
-    const topAppMinutes = (screentimeData.top_apps?.[0]?.minutes || 0);
+    // App minutes in top_apps: if weekly view, these are WEEKLY totals — convert to daily for thresholds
+    const topAppMinutesRaw = (screentimeData.top_apps?.[0]?.minutes || 0);
+    const topAppMinutesDaily = isWeeklyView ? topAppMinutesRaw / 7 : topAppMinutesRaw;
 
-    // Dimension 7 — The Actual Number (drives 0-20 based on pure hours)
+    // Dimension 7 — The Actual Number (drives 0-20 based on pure daily hours)
     if (hours >= 8) dims.num.raw = 20;
     else if (hours >= 6) dims.num.raw = 18;
     else if (hours >= 4) dims.num.raw = 14;
@@ -111,11 +114,11 @@ function calc(a, screentimeData) {
     else { dims.emo.raw = 3; dims.val.raw = 2; dims.drn.raw = 2; }
 
     // ═══ INTELLIGENT BOOSTS ═══
-    // Social-heavy usage at 3+ hours → boost reward patterns (addictive apps)
+    // Social-heavy usage at 3+ hours daily → boost reward patterns (addictive apps)
     if (hasSocialHeavy && hours >= 3) dims.dop.raw = Math.min(dims.dop.raw + Math.round(dims.dop.raw * 0.4), 25);
-    // One app dominating (3+ hours on top app) → boost emotional coping (using it as coping)
-    if (topAppMinutes >= 180) dims.emo.raw = Math.min(dims.emo.raw + Math.round(dims.emo.raw * 0.3), 20);
-    // 6+ hours total → boost attention fragmentation (no room for focus)
+    // One app dominating daily (3+ hours per day on top app) → boost emotional coping
+    if (topAppMinutesDaily >= 180) dims.emo.raw = Math.min(dims.emo.raw + Math.round(dims.emo.raw * 0.3), 20);
+    // 6+ hours total daily → boost attention fragmentation
     if (hours >= 6) dims.att.raw = Math.min(dims.att.raw + Math.round(dims.att.raw * 0.25), 20);
 
     // ═══ HONESTY CHECK — data vs button answers ═══
@@ -231,6 +234,7 @@ function ScreenTimeUpload({ onComplete, onSkip }) {
     };
     const data = {
       valid: true,
+      view_type: "daily", // Manual entry is always daily — user types their daily numbers
       total_minutes: parseTime(manual.total) || (parseTime(manual.m1) + parseTime(manual.m2) + parseTime(manual.m3)),
       top_apps: [
         manual.app1 && { name: manual.app1, minutes: parseTime(manual.m1) },
@@ -291,11 +295,12 @@ function ScreenTimeUpload({ onComplete, onSkip }) {
             onClick={e=>{e.stopPropagation();setHoverInfo(!hoverInfo)}}>
             <span style={{fontFamily:F.mono, fontSize:10, letterSpacing:2, color:C.orange, borderBottom:`1px dotted ${C.orange}`, cursor:"help"}}>HOW TO FIND IT ⓘ</span>
             {hoverInfo && (
-              <div style={{position:"absolute", bottom:"100%", left:"50%", transform:"translateX(-50%)", marginBottom:8, zIndex:30, width:280, background:C.ink, color:C.bg, padding:"14px 16px", fontFamily:F.serif, fontSize:13, lineHeight:1.6, textAlign:"left", boxShadow:"0 4px 12px rgba(0,0,0,0.15)"}}>
+              <div style={{position:"absolute", bottom:"100%", left:"50%", transform:"translateX(-50%)", marginBottom:8, zIndex:30, width:300, background:C.ink, color:C.bg, padding:"14px 16px", fontFamily:F.serif, fontSize:13, lineHeight:1.6, textAlign:"left", boxShadow:"0 4px 12px rgba(0,0,0,0.15)"}}>
                 <Lbl orange style={{display:"block", marginBottom:8, color:C.orange}}>On iPhone</Lbl>
                 <div style={{marginBottom:12}}>Settings → Screen Time → See All Activity → Screenshot</div>
                 <Lbl orange style={{display:"block", marginBottom:8, color:C.orange}}>On Android</Lbl>
-                <div>Settings → Digital Wellbeing → Dashboard → Screenshot</div>
+                <div style={{marginBottom:12}}>Settings → Digital Wellbeing → Dashboard → Screenshot</div>
+                <div style={{fontSize:11, fontStyle:"italic", color:"rgba(255,255,255,0.6)", paddingTop:10, borderTop:`0.5px solid rgba(255,255,255,0.15)`}}>Either the daily view or the weekly view works. We'll read whichever you send.</div>
               </div>
             )}
           </div>
@@ -416,12 +421,20 @@ export default function App() {
   async function genPlan() {
     const topDims = Object.entries(scores.dims).sort((a,b)=>b[1].raw-a[1].raw).slice(0,3);
     const followupContext = Object.entries(followupAnswers).map(([qid, fu]) => `Follow-up after "${Q[qid]?.t}": Q: ${fu.question} A: ${fu.answer}`).join("\n");
-    const screentimeContext = screentimeData?.valid ? `
-ACTUAL SCREEN TIME DATA (yesterday):
-Total screen time: ${Math.floor((screentimeData.total_minutes||0)/60)}h ${(screentimeData.total_minutes||0)%60}m
-Top apps: ${(screentimeData.top_apps||[]).map(a => `${a.name} (${Math.floor(a.minutes/60)}h ${a.minutes%60}m)`).join(", ")}
+    let screentimeContext = "";
+    if (screentimeData?.valid) {
+      const isWeekly = screentimeData.view_type === "weekly";
+      const totalH = Math.floor((screentimeData.total_minutes||0)/60);
+      const totalM = (screentimeData.total_minutes||0)%60;
+      const totalLabel = isWeekly ? "Daily average screen time" : "Screen time yesterday";
+      const appsLabel = isWeekly ? "Top apps this week (weekly totals)" : "Top apps yesterday";
+      screentimeContext = `
+ACTUAL SCREEN TIME DATA (${isWeekly ? "weekly view — daily average shown" : "daily view"}):
+${totalLabel}: ${totalH}h ${totalM}m
+${appsLabel}: ${(screentimeData.top_apps||[]).map(a => `${a.name} (${Math.floor(a.minutes/60)}h ${a.minutes%60}m${isWeekly ? " this week" : ""})`).join(", ")}
 
-USE THIS DATA THROUGHOUT THE PLAN. Reference exact apps and exact minutes.` : "";
+USE THIS DATA THROUGHOUT THE PLAN. Reference exact apps and exact minutes.${isWeekly ? " When mentioning app usage, say 'this week' (e.g., 'you gave 14 hours to TikTok this week'). When mentioning total time, use the daily average (e.g., 'you spend 4 hours a day on your phone on average')." : " When mentioning screen time, it's yesterday's data — reference it as 'yesterday' or 'your most recent day'."}`;
+    }
 
     const ctx = `Generate a personalized 8-week plan (56 days) for:
 Name: ${name}
@@ -588,35 +601,61 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
         return elements;
       };
 
+      // Determine which sections open by default
+      // Your Pattern + Your Numbers + Phase 1 open by default, rest collapsed
+      const titleLower = title?.toLowerCase() || "";
+      const isPattern = titleLower.includes("pattern");
+      const isPhase1 = titleLower.includes("phase 1") || titleLower.includes("the fast");
+      const isOneThing = titleLower.includes("one thing");
+      const openByDefault = isPattern || isNumbers || isPhase1 || isOneThing;
+
+      // Summary styling — consistent for all sections
+      const summaryStyle = {
+        fontFamily: F.mono,
+        fontSize: 10,
+        fontWeight: 600,
+        letterSpacing: 2,
+        textTransform: "uppercase",
+        color: C.orange,
+        cursor: "pointer",
+        marginBottom: 16,
+        borderBottom: `1.5px solid ${C.ink}`,
+        paddingBottom: 10,
+        listStyle: "none",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+      };
+
+      const expandHint = <span style={{color:C.muted, fontWeight:400, fontSize:9, letterSpacing:1}}>TAP TO EXPAND/COLLAPSE</span>;
+
+      // YOUR NUMBERS section — collapsible with dimension callout
       if (isNumbers && scores) {
         const topDims = Object.entries(scores.dims).sort((a,b)=>b[1].raw-a[1].raw).slice(0,3);
         return (
-          <div key={i} style={{marginBottom:28}}>
-            <div style={{fontFamily:F.mono, fontSize:10, fontWeight:600, letterSpacing:2, textTransform:"uppercase", color:C.orange, marginBottom:10, borderBottom:`0.5px dashed ${C.border}`, paddingBottom:8}}><Quote>{title}</Quote></div>
+          <details key={i} open={openByDefault} style={{marginBottom:28}}>
+            <summary style={summaryStyle}>
+              <Quote>{title}</Quote>
+              {expandHint}
+            </summary>
             <div style={{fontFamily:F.serif, fontSize:15, lineHeight:1.8, color:C.ink}}>{fmt(body)}</div>
             <div style={{marginTop:16, padding:"12px 16px", background:C.light, borderLeft:`2px solid ${C.orange}`}}>
               <Lbl orange style={{display:"block", marginBottom:8, fontSize:9}}>Hover the dimension name to learn more</Lbl>
               {topDims.map(([k,v],idx)=>(<div key={k} style={{fontFamily:F.serif, fontSize:14, marginBottom:6, lineHeight:1.6}}><span style={{fontFamily:F.mono, fontSize:10, color:C.orange, marginRight:8}}>{String(idx+1).padStart(2,"0")}</span><PlanDim dimKey={k} score={v.raw} max={v.max} /></div>))}
             </div>
-          </div>
+          </details>
         );
       }
 
-      if (isPhase) return (
-        <details key={i} open={i<=2} style={{marginBottom:28}}>
-          <summary style={{fontFamily:F.mono, fontSize:10, fontWeight:600, letterSpacing:2, textTransform:"uppercase", color:C.orange, cursor:"pointer", marginBottom:16, borderBottom:`1.5px solid ${C.ink}`, paddingBottom:10, listStyle:"none", display:"flex", justifyContent:"space-between"}}>
+      // All other sections — collapsible with consistent styling
+      return (
+        <details key={i} open={openByDefault} style={{marginBottom:28}}>
+          <summary style={summaryStyle}>
             <Quote>{title}</Quote>
-            <span style={{color:C.muted, fontWeight:400, fontSize:9, letterSpacing:1}}>TAP TO EXPAND/COLLAPSE</span>
+            {expandHint}
           </summary>
           <div>{fmt(body)}</div>
         </details>
-      );
-
-      return (
-        <div key={i} style={{marginBottom:28}}>
-          <div style={{fontFamily:F.mono, fontSize:10, fontWeight:600, letterSpacing:2, textTransform:"uppercase", color:C.orange, marginBottom:10, borderBottom:`0.5px dashed ${C.border}`, paddingBottom:8}}><Quote>{title}</Quote></div>
-          <div>{fmt(body)}</div>
-        </div>
       );
     });
   }
@@ -747,15 +786,26 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
         </div>
       )}
 
-      {screentimeData?.valid && (
-        <div style={{background:C.ink, color:C.bg, padding:"16px 20px", marginTop:16, borderLeft:`3px solid ${C.orange}`}}>
-          <Lbl orange style={{display:"block", marginBottom:8, color:C.orange}}>Yesterday's data</Lbl>
-          <div style={{fontFamily:F.mono, fontSize:12, lineHeight:1.8}}>
-            {screentimeData.total_minutes && <div>Total: {Math.floor(screentimeData.total_minutes/60)}h {screentimeData.total_minutes%60}m</div>}
-            {screentimeData.top_apps?.map((app,i) => (<div key={i}>{String(i+1).padStart(2,"0")} → {app.name} ({Math.floor(app.minutes/60)}h {app.minutes%60}m)</div>))}
+      {screentimeData?.valid && (() => {
+        const isWeekly = screentimeData.view_type === "weekly";
+        const label = isWeekly ? "Your week's data" : "Yesterday's data";
+        const totalLabel = isWeekly ? "Daily average" : "Total";
+        const appLabel = isWeekly ? "weekly" : "yesterday";
+        return (
+          <div style={{background:C.ink, color:C.bg, padding:"16px 20px", marginTop:16, borderLeft:`3px solid ${C.orange}`}}>
+            <Lbl orange style={{display:"block", marginBottom:8, color:C.orange}}>{label}</Lbl>
+            <div style={{fontFamily:F.mono, fontSize:12, lineHeight:1.8}}>
+              {screentimeData.total_minutes > 0 && <div>{totalLabel}: {Math.floor(screentimeData.total_minutes/60)}h {screentimeData.total_minutes%60}m</div>}
+              {screentimeData.top_apps?.length > 0 && (
+                <div style={{marginTop:8, paddingTop:8, borderTop:`0.5px solid rgba(255,255,255,0.15)`}}>
+                  <div style={{fontSize:10, letterSpacing:1, color:"rgba(255,255,255,0.6)", marginBottom:4, textTransform:"uppercase"}}>Top apps ({appLabel})</div>
+                  {screentimeData.top_apps.map((app,i) => (<div key={i}>{String(i+1).padStart(2,"0")} → {app.name} ({Math.floor(app.minutes/60)}h {app.minutes%60}m)</div>))}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       <div style={{borderTop:`1.5px solid ${C.ink}`, marginTop:20, paddingTop:16, marginBottom:20}}>
         <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12}}>
@@ -826,15 +876,20 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
       <h1 style={{fontFamily:F.display, fontSize:36, letterSpacing:2}}>{name.toUpperCase()}'S 8-WEEK PLAN</h1>
       <Lbl style={{display:"block", marginTop:8}}>Score: {scores?.total}/100 · {scores?.sev?.toUpperCase()} · 56 days · {new Date().toLocaleDateString()}</Lbl>
     </div>
-    <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:0, border:`0.5px solid ${C.border}`, marginBottom:28}}>
+    <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:0, border:`0.5px solid ${C.border}`, marginBottom:20}}>
       {[{w:"Week 1-2",p:"The fast"},{w:"Week 3-4",p:"The rebuild"},{w:"Week 5-6",p:"The return"},{w:"Week 7-8",p:"The anchor"}].map((ph,i)=>(<div key={i} style={{padding:"12px 16px", borderRight:i%2===0?`0.5px solid ${C.border}`:"none", borderBottom:i<2?`0.5px solid ${C.border}`:"none"}}><Lbl orange style={{fontSize:9}}>{ph.w}</Lbl><div style={{fontFamily:F.serif, fontSize:14, marginTop:2}}>{ph.p}</div></div>))}
+    </div>
+    <div className="no-print" style={{display:"flex", gap:12, marginBottom:20, justifyContent:"flex-end"}}>
+      <button onClick={()=>document.querySelectorAll('details').forEach(d=>d.open=true)} style={{background:"transparent", border:`0.5px solid ${C.border}`, padding:"6px 12px", fontFamily:F.mono, fontSize:9, letterSpacing:2, textTransform:"uppercase", color:C.muted, cursor:"pointer"}}>Expand all</button>
+      <button onClick={()=>document.querySelectorAll('details').forEach(d=>d.open=false)} style={{background:"transparent", border:`0.5px solid ${C.border}`, padding:"6px 12px", fontFamily:F.mono, fontSize:9, letterSpacing:2, textTransform:"uppercase", color:C.muted, cursor:"pointer"}}>Collapse all</button>
     </div>
     {renderPlan()}
     <div className="no-print" style={{borderTop:`2px solid ${C.ink}`, paddingTop:20, marginTop:16, display:"flex", gap:8}}>
-      <button onClick={()=>window.print()} style={{...btnStyle(), flex:1}} onMouseEnter={e=>e.target.style.background=C.orange} onMouseLeave={e=>e.target.style.background=C.ink}>Print / Save PDF</button>
+      <button onClick={()=>{document.querySelectorAll('details').forEach(d=>d.open=true); setTimeout(()=>window.print(), 300);}} style={{...btnStyle(), flex:1}} onMouseEnter={e=>e.target.style.background=C.orange} onMouseLeave={e=>e.target.style.background=C.ink}>Print / Save PDF</button>
       <button onClick={()=>{setMode("start");setName("");setEmail("");setAns({});setFollowupAnswers({});setScreentimeData(null);setScores(null);setPlan("");setQi(0);setShowPart2Intro(false)}} style={{flex:1, padding:14, fontFamily:F.mono, fontSize:12, letterSpacing:2, textTransform:"uppercase", background:"transparent", color:C.muted, border:`0.5px solid ${C.border}`, cursor:"pointer"}}>Done</button>
     </div>
     <Lbl className="no-print" style={{display:"block", textAlign:"center", marginTop:20, fontSize:8, color:C.border}}>Generated by Noorah · The digital intent company · {new Date().getFullYear()}</Lbl>
+    <style>{`@media print { details { page-break-inside: avoid; } details > summary { list-style: none !important; } details[open] > summary span:last-child { display: none !important; } .no-print { display: none !important; } }`}</style>
   </div>);
 
   return null;
