@@ -45,21 +45,21 @@ const LOADING_QUOTES = [
 // ═══════════════════════════════════════
 const Q = {
   // PART 1 — YOUR PATTERN
-  p1_lastnight: { t: "What was the last thing you did last night before you closed your eyes to sleep?", type: "text", part: 1 },
-  p1_forgot: { t: "When was the last time you were out somewhere and realized you'd left your phone behind?", o: ["Within the past week", "Within the past month", "Can't remember the last time", "I literally never leave it behind"], s: [0,1,2,3], d: "dop", part: 1 },
-  p1_pickups: { t: "Yesterday — not on average, yesterday — roughly how many times did you pick up your phone just to check?", o: ["Fewer than 10", "20 to 50", "50 to 100", "I honestly have no idea"], s: [0,2,4,6], d: "dop", part: 1 },
-  p1_focus: { t: "When was the last time you finished a movie, a book chapter, or a real conversation without checking your phone once?", o: ["This week", "This month", "I can't remember", "I don't know if I ever do"], s: [0,2,4,6], d: "att", part: 1 },
-  p1_upset: { t: "Think about the last time someone or something made you really upset or angry. Where was your phone when it happened, and what did you do with it?", type: "text", part: 1 },
+  p1_lastnight: { t: "What was the last thing you did last night before you closed your eyes?", type: "text", part: 1 },
+  p1_location: { t: "Your phone right now — where is it?", o: ["In my hand", "Within arm's reach", "In this room but not close", "In another room entirely"], s: [5,3,1,0], d: "dop", part: 1 },
+  p1_pickups: { t: "Yesterday — roughly how many times did you pick up your phone just to check?", o: ["Fewer than 10", "20 to 50", "50 to 100", "I honestly have no idea"], s: [0,2,4,6], d: "dop", part: 1 },
+  p1_focus: { t: "When was the last time you finished a movie, chapter, or real conversation without checking your phone once?", o: ["This week", "This month", "I can't remember", "I don't know if I ever do"], s: [0,2,4,6], d: "att", part: 1 },
+  p1_reach: { t: "When something hard happens — stress, boredom, loneliness — how often does your first instinct tell you to grab your phone?", o: ["Rarely, I reach for something else", "Sometimes, it's a coin flip", "Most of the time", "Always, before I even think about it"], s: [0,2,4,6], d: "emo", part: 1 },
 
   // PART 2 — YOUR LIFE
   p2_bedtime: { t: "Last night when you got into bed — where was your phone?", o: ["In another room", "In my room but across the room", "On my nightstand, face-down", "On my nightstand or in my bed with me"], s: [0,1,3,5], d: "env", part: 2 },
   p2_screentime: { t: "Let's look at your actual screen time. What does yesterday tell us?", type: "screentime", part: 2 },
-  p2_purchase: { t: "What's the last thing you bought, subscribed to, or signed up for because something on your phone showed it to you? When was that, and do you still use it?", type: "text", part: 2 },
-  p2_analog: { t: "Think about something you used to do with your hands, your body, or real people — something you loved and don't do anymore. What was it, and when did you stop?", type: "text", part: 2 },
+  p2_spend: { t: "In the last month, roughly how much did you spend on things your phone showed you — ads, impulse buys, subscriptions?", o: ["Under $20", "$20 to $100", "$100 to $300", "More than $300 — or I don't want to know"], s: [0,2,4,6], d: "drn", part: 2 },
+  p2_analog: { t: "Something you used to do off your phone that you miss. What was it?", type: "text", part: 2 },
   p2_context: { t: "Who are you doing this for? And what's your work setup?", type: "double", o1: ["Alone", "With partner", "With family/kids", "With roommates"], o2: ["Fully remote", "Hybrid", "In-office", "Not currently working"], part: 2 },
 };
 
-const QUIZ_ORDER = ["p1_lastnight","p1_forgot","p1_pickups","p1_focus","p1_upset","p2_bedtime","p2_screentime","p2_purchase","p2_analog","p2_context"];
+const QUIZ_ORDER = ["p1_lastnight","p1_location","p1_pickups","p1_focus","p1_reach","p2_bedtime","p2_screentime","p2_spend","p2_analog","p2_context"];
 const DIM = {
   dop: {n:"Reward patterns",x:25},
   att: {n:"Attention continuity",x:20},
@@ -84,13 +84,20 @@ function calc(a, screentimeData) {
     if (q.d && dims[q.d]) dims[q.d].raw += s;
   });
 
-  // Scale raw button scores to dimension max (since fewer questions per dimension now)
-  dims.dop.raw = Math.round(dims.dop.raw * (25 / 9));
+  // Scale raw button scores to dimension max
+  // dop: p1_location (5) + p1_pickups (6) = 11 max → 25
+  // att: p1_focus (6) = 6 max → 20
+  // emo: p1_reach (6) = 6 max → 20
+  // env: p2_bedtime (5) = 5 max → 15
+  // drn: p2_spend (6) = 6 max → 10
+  dims.dop.raw = Math.round(dims.dop.raw * (25 / 11));
   dims.att.raw = Math.round(dims.att.raw * (20 / 6));
+  dims.emo.raw = Math.round(dims.emo.raw * (20 / 6));
   dims.env.raw = Math.round(dims.env.raw * (15 / 5));
+  dims.drn.raw = Math.round(dims.drn.raw * (10 / 6));
 
-  // Baseline for dimensions not directly asked (emo, val, drn)
-  // Use screen time to calibrate if available, else use conservative defaults
+  // Baseline for values dimension (not directly asked)
+  // Use screen time to calibrate if available, else use conservative default
   if (hasScreentime) {
     const hours = screentimeData.total_minutes / 60; // Always daily (average if weekly view)
     const isWeeklyView = screentimeData.view_type === "weekly";
@@ -107,11 +114,12 @@ function calc(a, screentimeData) {
     else if (hours >= 2) dims.num.raw = 8;
     else dims.num.raw = 2;
 
-    // Baselines for inferred dimensions
-    if (hours >= 8) { dims.emo.raw = 14; dims.val.raw = 8; dims.drn.raw = 7; }
-    else if (hours >= 5) { dims.emo.raw = 10; dims.val.raw = 6; dims.drn.raw = 5; }
-    else if (hours >= 3) { dims.emo.raw = 7; dims.val.raw = 4; dims.drn.raw = 3; }
-    else { dims.emo.raw = 3; dims.val.raw = 2; dims.drn.raw = 2; }
+    // Values alignment: only this dimension is inferred now (not directly asked)
+    // The gap between values and behavior grows with hours on phone
+    if (hours >= 8) dims.val.raw = 8;
+    else if (hours >= 5) dims.val.raw = 6;
+    else if (hours >= 3) dims.val.raw = 4;
+    else dims.val.raw = 2;
 
     // ═══ INTELLIGENT BOOSTS ═══
     // Social-heavy usage at 3+ hours daily → boost reward patterns (addictive apps)
@@ -126,11 +134,11 @@ function calc(a, screentimeData) {
     if (a.p1_pickups === 0 && hours >= 4) dims.dop.raw = Math.min(25, dims.dop.raw + 5);
     // If they said "last uninterrupted focus this week" but screen time is 6+ hours — boost attention
     if (a.p1_focus === 0 && hours >= 6) dims.att.raw = Math.min(20, dims.att.raw + 4);
+    // If they said they "rarely" reach for phone when stressed but usage is heavy — boost emo
+    if (a.p1_reach === 0 && hours >= 5) dims.emo.raw = Math.min(20, dims.emo.raw + 4);
   } else {
-    // No screen time uploaded — use conservative baselines
-    dims.emo.raw = 10;
+    // No screen time uploaded — conservative default for values dimension only
     dims.val.raw = 5;
-    dims.drn.raw = 4;
   }
 
   // Cap everything to max
@@ -368,7 +376,7 @@ export default function App() {
     setAns(newAns);
 
     // AI follow-ups on text questions
-    const textQsWithFollowup = ["p1_lastnight", "p1_upset", "p2_purchase", "p2_analog"];
+    const textQsWithFollowup = ["p1_lastnight", "p2_analog"];
     if (textQsWithFollowup.includes(qid) && q.type === "text" && typeof val === "string" && val.trim().length > 10) {
       const followupQ = await fetchFollowup(q.t, val);
       if (followupQ) {
@@ -436,19 +444,19 @@ ${appsLabel}: ${(screentimeData.top_apps||[]).map(a => `${a.name} (${Math.floor(
 USE THIS DATA THROUGHOUT THE PLAN. Reference exact apps and exact minutes.${isWeekly ? " When mentioning app usage, say 'this week' (e.g., 'you gave 14 hours to TikTok this week'). When mentioning total time, use the daily average (e.g., 'you spend 4 hours a day on your phone on average')." : " When mentioning screen time, it's yesterday's data — reference it as 'yesterday' or 'your most recent day'."}`;
     }
 
-    const ctx = `Generate a personalized 8-week plan (56 days) for:
+    const ctx = `Generate a personalized 8-week plan for:
 Name: ${name}
 Score: ${scores.total}/100 (${scores.sev})
 Top dimension: ${DIM[scores.top].n}
 Dimensions: ${topDims.map(([k,v])=>`${DIM[k].n}: ${v.raw}/${v.max}`).join(", ")}
 Last thing last night: "${ans.p1_lastnight||""}"
-Last time they left phone behind: "${Q.p1_forgot.o?.[ans.p1_forgot]||""}"
+Phone location right now: "${Q.p1_location.o?.[ans.p1_location]||""}"
 Phone pickups yesterday: "${Q.p1_pickups.o?.[ans.p1_pickups]||""}"
 Last uninterrupted focus: "${Q.p1_focus.o?.[ans.p1_focus]||""}"
-Last upset moment (what did they do with phone): "${ans.p1_upset||""}"
+Reaching for phone under stress: "${Q.p1_reach.o?.[ans.p1_reach]||""}"
 Phone at bedtime: "${Q.p2_bedtime.o?.[ans.p2_bedtime]||""}"
-Last algorithmic purchase: "${ans.p2_purchase||""}"
-Lost analog activity: "${ans.p2_analog||""}"
+Recent impulse spending: "${Q.p2_spend.o?.[ans.p2_spend]||""}"
+Thing they miss doing off phone: "${ans.p2_analog||""}"
 Living: ${Q.p2_context.o1?.[ans.p2_context?.a]||""}
 Work: ${Q.p2_context.o2?.[ans.p2_context?.b]||""}
 Prescribed fast: ${scores.fast}${screentimeContext}
@@ -786,7 +794,11 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
   // ═══ RESULTS ═══
   if (mode === "results" && scores) {
     const sorted = Object.entries(scores.dims).sort((a,b)=>b[1].raw-a[1].raw);
-    return (<div style={{...pg, maxWidth:540}} ref={topRef}>
+    const topDimKey = scores.top;
+    const topDimName = DIM_INFO[topDimKey]?.n || "";
+
+    return (<div style={{...pg, maxWidth:580}} ref={topRef}>
+      {/* ═══ SCORE SECTION ═══ */}
       <div style={{display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8}}>
         <Lbl orange><Quote>Your Noorah score</Quote></Lbl>
         <span style={{display:"inline-block", padding:"4px 14px", border:`1.5px solid ${scores.sev === "Critical" ? C.orange : C.border}`, fontFamily:F.mono, fontSize:10, letterSpacing:2, textTransform:"uppercase", color:scores.sev === "Minimal" ? "#7B8F6B" : scores.sev === "Moderate" ? C.muted : C.orange}}>{scores.sev}</span>
@@ -823,19 +835,125 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
         );
       })()}
 
-      <div style={{borderTop:`1.5px solid ${C.ink}`, marginTop:20, paddingTop:16, marginBottom:20}}>
+      {/* ═══ DIMENSIONS ═══ */}
+      <div style={{borderTop:`1.5px solid ${C.ink}`, marginTop:24, paddingTop:16, marginBottom:28}}>
         <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12}}>
           <Lbl>Dimensions</Lbl>
           <Lbl orange style={{fontSize:9}}>Hover for details</Lbl>
         </div>
         {sorted.map(([k,v],i)=>(<DimRow key={k} dimKey={k} rank={i+1} val={v} isTop={k === scores.top}/>))}
       </div>
-      <div style={{border:`2px solid ${C.ink}`, padding:20, position:"relative", marginTop:24}}>
-        <span style={{position:"absolute", top:-8, left:16, background:C.bg, padding:"0 8px", fontFamily:F.mono, fontSize:9, letterSpacing:3, color:C.orange, fontWeight:600}}>UNLOCK</span>
-        <p style={{fontFamily:F.serif, fontSize:18, fontStyle:"italic", lineHeight:1.7, marginBottom:12, color:C.ink}}>{name}, you've got your number. A number without a plan is just a number.</p>
-        <p style={{fontFamily:F.mono, fontSize:12, color:C.muted, lineHeight:1.7, marginBottom:16}}>8 weeks. 56 days. Every single one mapped out. Four phases — the fast, the rebuild, the return, the anchor. Your patterns. Your schedule. Your rules. Built from your answers. Ready in under a minute.</p>
-        <button onClick={()=>setMode("generating")} style={{...btnStyle(), background:C.orange}} onMouseEnter={e=>e.target.style.background=C.ink} onMouseLeave={e=>e.target.style.background=C.orange}>Get your 8-week plan → $9.99</button>
-        <Lbl style={{display:"block", textAlign:"center", marginTop:8, fontSize:8}}>8 weeks · 56 days · every day mapped · printable</Lbl>
+
+      {/* ═══ TRANSITION — from score to plan ═══ */}
+      <div style={{textAlign:"center", padding:"32px 16px", borderTop:`2px solid ${C.ink}`, borderBottom:`2px solid ${C.ink}`, marginBottom:32}}>
+        <Lbl orange style={{display:"block", marginBottom:12}}>A number is just a number</Lbl>
+        <p style={{fontFamily:F.serif, fontSize:22, fontStyle:"italic", lineHeight:1.4, color:C.ink, maxWidth:420, margin:"0 auto"}}>
+          {name}, you've seen where you are. Now here's what it takes to get where you're going.
+        </p>
+      </div>
+
+      {/* ═══ BENEFITS GRID ═══ */}
+      <Lbl orange style={{display:"block", marginBottom:6, textAlign:"center"}}>What your plan includes</Lbl>
+      <h2 style={{fontFamily:F.display, fontSize:32, letterSpacing:2, textAlign:"center", marginBottom:28, color:C.ink, lineHeight:1}}>BUILT FOR YOUR LIFE</h2>
+
+      <div style={{display:"grid", gridTemplateColumns:"1fr", gap:14, marginBottom:32}}>
+        {[
+          { n:"01", t:"Your actual pattern, named", d:"Not a template. A plan built from your specific answers, your top apps, your actual hours, the thing you said you miss." },
+          { n:"02", t:"8 weeks, week by week", d:"One shift per week. Three daily rhythms. One thing to notice. Not 56 tasks. A real rhythm that holds." },
+          { n:"03", t:"Your Digital Constitution", d:"Seven personal rules you build to carry with you. Specific to your life, work, and family setup." },
+          { n:"04", t:"Your Two-Minute Map", d:"What to do when the urge hits. Organized by the time you have — 2 minutes, 15 minutes, an hour, all afternoon." },
+        ].map((b,i)=>(
+          <div key={i} style={{display:"flex", gap:16, padding:"18px 20px", background:C.card, border:`0.5px solid ${C.border}`, borderLeft:`3px solid ${C.orange}`}}>
+            <div style={{fontFamily:F.display, fontSize:32, color:C.orange, lineHeight:1, minWidth:40}}>{b.n}</div>
+            <div style={{flex:1}}>
+              <div style={{fontFamily:F.mono, fontSize:10, letterSpacing:2, textTransform:"uppercase", color:C.ink, fontWeight:600, marginBottom:6}}>{b.t}</div>
+              <div style={{fontFamily:F.serif, fontSize:14.5, lineHeight:1.6, color:C.muted}}>{b.d}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* ═══ 8-WEEK TIMELINE ═══ */}
+      <Lbl orange style={{display:"block", marginBottom:6, textAlign:"center"}}>What happens in 8 weeks</Lbl>
+      <h2 style={{fontFamily:F.display, fontSize:32, letterSpacing:2, textAlign:"center", marginBottom:24, color:C.ink, lineHeight:1}}>THE JOURNEY</h2>
+
+      <div style={{display:"grid", gridTemplateColumns:"1fr", gap:12, marginBottom:32}}>
+        {[
+          { w:"WEEK 1-2", p:"The Fast", d:"You break the loop. Apps come off. Withdrawal happens. You feel it honestly for the first time." },
+          { w:"WEEK 3-4", p:"The Rebuild", d:"You rebuild what was replaced. Movement, connection, your lost analog activity returns." },
+          { w:"WEEK 5-6", p:"The Return", d:"You let tools back in. One at a time. Under strict rules. Your rules this time." },
+          { w:"WEEK 7-8", p:"The Anchor", d:"The new you holds. You teach someone else. You retake your score and see the number move." },
+        ].map((ph,i)=>(
+          <div key={i} style={{padding:"16px 18px", background:i===0?C.ink:C.card, color:i===0?C.bg:C.ink, border:`0.5px solid ${i===0?C.ink:C.border}`, position:"relative"}}>
+            <div style={{display:"flex", alignItems:"baseline", gap:14, marginBottom:4}}>
+              <Lbl style={{color:i===0?C.orange:C.orange, fontSize:9, letterSpacing:2}}>{ph.w}</Lbl>
+              <span style={{fontFamily:F.serif, fontSize:16, fontStyle:"italic", color:i===0?C.bg:C.ink}}>{ph.p}</span>
+            </div>
+            <div style={{fontFamily:F.serif, fontSize:13.5, lineHeight:1.6, color:i===0?"rgba(245,240,232,0.75)":C.muted}}>{ph.d}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ═══ OUTCOMES ═══ */}
+      <Lbl orange style={{display:"block", marginBottom:6, textAlign:"center"}}>What changes in your life</Lbl>
+      <h2 style={{fontFamily:F.display, fontSize:32, letterSpacing:2, textAlign:"center", marginBottom:24, color:C.ink, lineHeight:1}}>ON THE OTHER SIDE</h2>
+
+      <div style={{padding:"24px 20px", background:C.light, borderLeft:`3px solid ${C.orange}`, marginBottom:40}}>
+        {[
+          "Sleep that actually restores you.",
+          "Meals and conversations with no phone on the table.",
+          "Weekends that leave you lighter, not heavier.",
+          "The feeling of being present in your own life again.",
+        ].map((o,i)=>(
+          <div key={i} style={{display:"flex", gap:12, marginBottom:i<3?14:0, alignItems:"flex-start"}}>
+            <span style={{fontFamily:F.mono, fontSize:11, color:C.orange, fontWeight:600, lineHeight:1.5}}>→</span>
+            <div style={{fontFamily:F.serif, fontSize:17, fontStyle:"italic", lineHeight:1.5, color:C.ink, flex:1}}>{o}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ═══ MAIN CTA ═══ */}
+      <div style={{border:`2px solid ${C.ink}`, padding:24, position:"relative", marginBottom:32}}>
+        <span style={{position:"absolute", top:-8, left:16, background:C.bg, padding:"0 8px", fontFamily:F.mono, fontSize:9, letterSpacing:3, color:C.orange, fontWeight:600}}>UNLOCK YOUR PLAN</span>
+        <p style={{fontFamily:F.serif, fontSize:18, fontStyle:"italic", lineHeight:1.6, marginBottom:18, color:C.ink, textAlign:"center"}}>
+          Your plan is ready to build. We already have your answers, your score, and your top pattern — <span style={{color:C.orange, fontWeight:500}}>{topDimName}</span>.
+        </p>
+        <button onClick={()=>setMode("generating")} style={{...btnStyle(), background:C.orange, padding:"18px", fontSize:13}} onMouseEnter={e=>e.target.style.background=C.ink} onMouseLeave={e=>e.target.style.background=C.orange}>Get your 8-week plan → $9.99</button>
+        <div style={{display:"flex", justifyContent:"center", gap:14, marginTop:12, flexWrap:"wrap"}}>
+          <Lbl style={{fontSize:8}}>8 weeks</Lbl>
+          <span style={{color:C.border}}>·</span>
+          <Lbl style={{fontSize:8}}>Printable PDF</Lbl>
+          <span style={{color:C.border}}>·</span>
+          <Lbl style={{fontSize:8}}>Yours forever</Lbl>
+          <span style={{color:C.border}}>·</span>
+          <Lbl style={{fontSize:8}}>Ready in 60 seconds</Lbl>
+        </div>
+      </div>
+
+      {/* ═══ FAQ ═══ */}
+      <Lbl orange style={{display:"block", marginBottom:6, textAlign:"center"}}>Before you decide</Lbl>
+      <h2 style={{fontFamily:F.display, fontSize:28, letterSpacing:2, textAlign:"center", marginBottom:20, color:C.ink, lineHeight:1}}>COMMON QUESTIONS</h2>
+
+      <div style={{marginBottom:32}}>
+        {[
+          { q:"Is this just another detox?", a:"No. A detox is subtraction. This is replacement. You remove what's hurting and rebuild what you actually want in its place." },
+          { q:"What if I can't follow it perfectly?", a:"Nobody does. The plan assumes you'll fall off somewhere — that's built in. Week by week, not day by day. You can't fail a rhythm, you can only restart it." },
+          { q:"Why $9.99?", a:"Because free products get ignored. A small commitment you made is one you're more likely to honor. It's priced to matter but not to block anyone." },
+        ].map((f,i)=>(
+          <details key={i} style={{marginBottom:10, border:`0.5px solid ${C.border}`}}>
+            <summary style={{cursor:"pointer", padding:"14px 18px", fontFamily:F.serif, fontSize:15, fontWeight:500, color:C.ink, listStyle:"none", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+              <span>{f.q}</span>
+              <span style={{color:C.orange, fontFamily:F.mono, fontSize:11}}>+</span>
+            </summary>
+            <div style={{padding:"0 18px 16px", fontFamily:F.serif, fontSize:14, lineHeight:1.7, color:C.muted}}>{f.a}</div>
+          </details>
+        ))}
+      </div>
+
+      {/* ═══ SECONDARY CTA ═══ */}
+      <div style={{textAlign:"center", padding:"24px 16px", background:C.card, border:`0.5px solid ${C.border}`, marginBottom:20}}>
+        <p style={{fontFamily:F.serif, fontSize:16, fontStyle:"italic", color:C.ink, lineHeight:1.5, marginBottom:16}}>Ready when you are.</p>
+        <button onClick={()=>setMode("generating")} style={{...btnStyle(), background:C.ink}} onMouseEnter={e=>e.target.style.background=C.orange} onMouseLeave={e=>e.target.style.background=C.ink}>Get your 8-week plan → $9.99</button>
       </div>
     </div>);
   }
