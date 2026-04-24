@@ -344,6 +344,7 @@ export default function App() {
   const [screentimeData, setScreentimeData] = useState(null);
   const [scores, setScores] = useState(null);
   const [plan, setPlan] = useState("");
+  const [expandedWeeks, setExpandedWeeks] = useState(new Set([1])); // Week 1 expanded by default
   const [errorDetails, setErrorDetails] = useState("");
   const [loadingQuoteIdx, setLoadingQuoteIdx] = useState(0);
   const [adminPw, setAdminPw] = useState("");
@@ -488,49 +489,162 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
     setMode("generating");
   }
 
-  function renderPlan() {
+  // ═══════════════════════════════════════
+  // PARSE PLAN INTO STRUCTURED DATA
+  // ═══════════════════════════════════════
+  function parsePlan() {
     const sections = plan.split(/###\s*/g).filter(s=>s.trim());
-    return sections.map((sec, i) => {
+    const result = {
+      pattern: null,       // {title, body}
+      numbers: null,       // {title, body}
+      weeks: [],           // [{num, sectionTitle, title, shift, rhythm[], notice}]
+      twoMinuteMap: null,  // {title, body}
+      seven: null,         // {title, body}
+      oneThing: null,      // {title, body}
+      other: [],           // any unrecognized sections
+    };
+
+    sections.forEach(sec => {
       const lines = sec.trim().split("\n");
-      const title = lines[0]?.trim();
+      const title = (lines[0] || "").trim();
       const body = lines.slice(1).join("\n").trim();
-      const isPhase = title?.toLowerCase().includes("phase");
-      const isNumbers = title?.toLowerCase().includes("number");
+      const tLower = title.toLowerCase();
 
-      // Parse body — detect WEEK cards (new format) with SHIFT / RHYTHM / NOTICE
-      const fmt = (text) => {
-        const rawLines = text.split("\n");
-        const elements = [];
-        let currentWeek = null; // {num, title, shift, rhythm:[], notice}
-        let currentSection = null; // "shift" | "rhythm" | "notice"
-        let introText = [];
+      if (tLower.includes("pattern")) {
+        result.pattern = { title, body };
+      } else if (tLower.includes("number")) {
+        result.numbers = { title, body };
+      } else if (tLower.includes("week")) {
+        // This is a WEEK section — parse the week card(s) inside
+        const weeks = parseWeekCards(body, title);
+        result.weeks.push(...weeks);
+      } else if (tLower.includes("two-minute") || tLower.includes("two minute") || tLower.includes("2-minute") || tLower.includes("map") || tLower.includes("dopamine")) {
+        result.twoMinuteMap = { title, body };
+      } else if (tLower.includes("seven") || tLower.includes("rules")) {
+        result.seven = { title, body };
+      } else if (tLower.includes("one thing")) {
+        result.oneThing = { title, body };
+      } else {
+        result.other.push({ title, body });
+      }
+    });
 
-        const flushWeek = () => {
-          if (!currentWeek) return;
-          const w = currentWeek;
-          currentWeek = null;
-          currentSection = null;
-          elements.push(
-            <div key={`week-${w.num}`} className="week-card" style={{marginBottom:22, padding:"20px 22px", background:C.card, border:`0.5px solid ${C.border}`, borderLeft:`3px solid ${C.orange}`, pageBreakInside:"avoid"}}>
-              <div style={{display:"flex", alignItems:"baseline", gap:14, marginBottom:16, paddingBottom:12, borderBottom:`0.5px dashed ${C.border}`}}>
-                <span style={{fontFamily:F.display, fontSize:40, color:C.orange, lineHeight:.9}}>0{w.num}</span>
-                <div style={{flex:1}}>
-                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:3, color:C.muted, textTransform:"uppercase", marginBottom:2}}>Week {w.num}</div>
-                  {w.title && <div style={{fontFamily:F.serif, fontSize:18, fontStyle:"italic", color:C.ink, lineHeight:1.3}}>{w.title}</div>}
-                </div>
-              </div>
-              {w.shift && (
+    return result;
+  }
+
+  // Parse a week section body into structured week card(s)
+  function parseWeekCards(body, sectionTitle) {
+    const rawLines = body.split("\n");
+    const weeks = [];
+    let current = null;
+    let section = null;
+    let introCollected = [];
+
+    const pushWeek = () => {
+      if (current) {
+        weeks.push(current);
+        current = null;
+      }
+    };
+
+    for (let i = 0; i < rawLines.length; i++) {
+      const line = rawLines[i].trim();
+      if (!line) { section = null; continue; }
+
+      const weekMatch = line.match(/^Week\s+(\d+)\s*[—–-]\s*(.*)$/i) || line.match(/^Week\s+(\d+)\s*$/i);
+      const shiftMatch = line.match(/^SHIFT:?\s*(.*)/i);
+      const rhythmHeader = line.match(/^RHYTHM:?\s*(.*)/i);
+      const noticeMatch = line.match(/^NOTICE:?\s*(.*)/i);
+      const bulletMatch = line.startsWith("-") || line.startsWith("→");
+
+      if (weekMatch) {
+        pushWeek();
+        current = {
+          num: parseInt(weekMatch[1]),
+          sectionTitle,
+          title: (weekMatch[2] || "").trim(),
+          shift: "",
+          rhythm: [],
+          notice: "",
+        };
+        section = null;
+      } else if (shiftMatch && current) {
+        section = "shift";
+        if (shiftMatch[1].trim()) current.shift = shiftMatch[1].trim();
+      } else if (rhythmHeader && current) {
+        section = "rhythm";
+        if (rhythmHeader[1].trim() && rhythmHeader[1].trim().startsWith("-")) {
+          current.rhythm.push(rhythmHeader[1].trim().replace(/^-\s*/, ""));
+        }
+      } else if (noticeMatch && current) {
+        section = "notice";
+        if (noticeMatch[1].trim()) current.notice = noticeMatch[1].trim();
+      } else if (bulletMatch && current && section === "rhythm") {
+        current.rhythm.push(line.replace(/^[-→]\s*/, ""));
+      } else if (current) {
+        // Continuation of whatever section we're in
+        if (section === "shift") current.shift = (current.shift + " " + line).trim();
+        else if (section === "notice") current.notice = (current.notice + " " + line).trim();
+      }
+    }
+    pushWeek();
+    return weeks;
+  }
+
+  // ═══════════════════════════════════════
+  // RENDER A SINGLE WEEK CARD (full version)
+  // ═══════════════════════════════════════
+  function WeekCard({ week, expanded, onToggle, isCurrent }) {
+    return (
+      <div style={{marginBottom:16}}>
+        {isCurrent && (
+          <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 0", marginBottom:10}}>
+            <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:3, color:C.orange, fontWeight:600}}>▼ NOW SHOWING</div>
+            <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2, color:C.muted}}>WEEK {week.num} OF 8</div>
+          </div>
+        )}
+        <div
+          className="week-card"
+          style={{background:C.card, border:`0.5px solid ${C.border}`, borderLeft:`3px solid ${C.orange}`, padding:expanded?"22px 24px":"14px 18px", cursor:expanded?"default":"pointer", transition:"padding .2s"}}
+          onClick={!expanded ? onToggle : undefined}
+        >
+          {/* Week header — always visible */}
+          <div style={{display:"flex", alignItems:"baseline", gap:14, paddingBottom:expanded?12:0, marginBottom:expanded?16:0, borderBottom:expanded?`0.5px dashed ${C.border}`:"none"}}>
+            <div style={{fontFamily:F.display, fontSize:expanded?40:26, color:C.orange, lineHeight:.9, letterSpacing:-1, minWidth:44}}>{String(week.num).padStart(2,"0")}</div>
+            <div style={{flex:1}}>
+              <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:3, color:C.muted, textTransform:"uppercase", marginBottom:2}}>Week {week.num}</div>
+              {week.title && <div style={{fontFamily:F.serif, fontSize:expanded?19:15, fontStyle:"italic", color:C.ink, lineHeight:1.3}}>{week.title}</div>}
+              {!expanded && week.shift && (
+                <div style={{fontFamily:F.mono, fontSize:10, color:C.muted, marginTop:3, lineHeight:1.4}}>{week.shift.slice(0,60)}{week.shift.length>60?"...":""}</div>
+              )}
+            </div>
+            {!expanded && (
+              <button onClick={(e)=>{e.stopPropagation(); onToggle();}} style={{background:"transparent", border:"none", color:C.orange, fontFamily:F.mono, fontSize:14, cursor:"pointer", padding:4}}>+</button>
+            )}
+            {expanded && (
+              <button onClick={(e)=>{e.stopPropagation(); onToggle();}} className="no-print" style={{background:"transparent", border:"none", color:C.muted, fontFamily:F.mono, fontSize:10, cursor:"pointer", padding:4, letterSpacing:2}}>COLLAPSE</button>
+            )}
+          </div>
+
+          {/* Week body — only when expanded */}
+          {expanded && (
+            <>
+              {week.shift && (
                 <div style={{marginBottom:16}}>
-                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2.5, color:C.orange, fontWeight:600, marginBottom:5}}>THE SHIFT <span style={{color:C.muted, fontWeight:400, marginLeft:6}}>one-time</span></div>
-                  <div style={{fontFamily:F.serif, fontSize:15.5, lineHeight:1.55, color:C.ink}}>{w.shift}</div>
+                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2.5, color:C.orange, fontWeight:600, marginBottom:5}}>
+                    THE SHIFT <span style={{color:C.muted, fontWeight:400, marginLeft:6, letterSpacing:1}}>one-time</span>
+                  </div>
+                  <div style={{fontFamily:F.serif, fontSize:15.5, lineHeight:1.55, color:C.ink}}>{week.shift}</div>
                 </div>
               )}
-              {w.rhythm && w.rhythm.length > 0 && (
+              {week.rhythm && week.rhythm.length > 0 && (
                 <div style={{marginBottom:16}}>
-                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2.5, color:C.orange, fontWeight:600, marginBottom:5}}>DAILY RHYTHM <span style={{color:C.muted, fontWeight:400, marginLeft:6}}>every day this week</span></div>
+                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2.5, color:C.orange, fontWeight:600, marginBottom:6}}>
+                    DAILY RHYTHM <span style={{color:C.muted, fontWeight:400, marginLeft:6, letterSpacing:1}}>every day this week</span>
+                  </div>
                   <div>
-                    {w.rhythm.map((r, rIdx) => (
-                      <div key={rIdx} style={{fontFamily:F.serif, fontSize:14.5, lineHeight:1.6, color:C.ink, marginBottom:4, paddingLeft:16, position:"relative"}}>
+                    {week.rhythm.map((r, rIdx) => (
+                      <div key={rIdx} style={{fontFamily:F.serif, fontSize:14.5, lineHeight:1.55, color:C.ink, marginBottom:4, paddingLeft:16, position:"relative"}}>
                         <span style={{position:"absolute", left:0, color:C.orange, fontFamily:F.mono, fontSize:11}}>→</span>
                         {r}
                       </div>
@@ -538,151 +652,62 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
                   </div>
                 </div>
               )}
-              {w.notice && (
+              {week.notice && (
                 <div>
-                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2.5, color:C.orange, fontWeight:600, marginBottom:5}}>NOTICE THIS <span style={{color:C.muted, fontWeight:400, marginLeft:6}}>sit with it all week</span></div>
-                  <div style={{fontFamily:F.serif, fontSize:14, fontStyle:"italic", lineHeight:1.55, color:C.muted}}>{w.notice}</div>
+                  <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2.5, color:C.orange, fontWeight:600, marginBottom:5}}>
+                    NOTICE THIS <span style={{color:C.muted, fontWeight:400, marginLeft:6, letterSpacing:1}}>sit with it all week</span>
+                  </div>
+                  <div style={{fontFamily:F.serif, fontSize:14, fontStyle:"italic", lineHeight:1.55, color:C.muted}}>{week.notice}</div>
                 </div>
               )}
-            </div>
-          );
-        };
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
 
-        const flushIntro = () => {
-          if (introText.length === 0) return;
-          const text = introText.join(" ").trim();
-          introText = [];
-          if (text) elements.push(
-            <div key={`intro-${elements.length}`} style={{fontFamily:F.serif, fontSize:15, lineHeight:1.8, color:C.ink, marginBottom:20, fontStyle:"italic"}}>{text}</div>
-          );
-        };
+  // ═══════════════════════════════════════
+  // FORMAT BODY TEXT (for non-week sections)
+  // ═══════════════════════════════════════
+  function formatBody(text) {
+    if (!text) return null;
+    const rawLines = text.split("\n");
+    const elements = [];
+    for (let j = 0; j < rawLines.length; j++) {
+      const line = rawLines[j].trim();
+      if (!line) continue;
+      const rule = line.match(/^(\d+)\.\s+(.*)/);
+      const bullet = line.startsWith("-") || line.startsWith("→");
+      const menuHeader = line.match(/^When you.*:$/i);
 
-        for (let j = 0; j < rawLines.length; j++) {
-          const raw = rawLines[j];
-          const line = raw.trim();
-          if (!line) { currentSection = null; continue; }
-
-          // Week header: "Week 1 — Title" or "Week 1"
-          const weekMatch = line.match(/^Week\s+(\d+)\s*[—–-]\s*(.*)$/i) || line.match(/^Week\s+(\d+)\s*$/i);
-          const shiftMatch = line.match(/^SHIFT:?\s*(.*)/i);
-          const rhythmHeader = line.match(/^RHYTHM:?\s*(.*)/i);
-          const noticeMatch = line.match(/^NOTICE:?\s*(.*)/i);
-          const bulletMatch = line.startsWith("-") || line.startsWith("→");
-          const ruleMatch = line.match(/^(\d+)\.\s+(.*)/);
-          const menuHeaderMatch = line.match(/^When you.*:$/i);
-
-          if (weekMatch) {
-            flushWeek(); flushIntro();
-            currentWeek = { num: parseInt(weekMatch[1]), title: (weekMatch[2] || "").trim(), shift:"", rhythm:[], notice:"" };
-            currentSection = null;
-          } else if (shiftMatch && currentWeek) {
-            currentSection = "shift";
-            if (shiftMatch[1].trim()) currentWeek.shift = shiftMatch[1].trim();
-          } else if (rhythmHeader && currentWeek) {
-            currentSection = "rhythm";
-            if (rhythmHeader[1].trim() && rhythmHeader[1].trim().startsWith("-")) {
-              currentWeek.rhythm.push(rhythmHeader[1].trim().replace(/^-\s*/, ""));
-            }
-          } else if (noticeMatch && currentWeek) {
-            currentSection = "notice";
-            if (noticeMatch[1].trim()) currentWeek.notice = noticeMatch[1].trim();
-          } else if (bulletMatch && currentWeek && currentSection === "rhythm") {
-            currentWeek.rhythm.push(line.replace(/^[-→]\s*/, ""));
-          } else if (bulletMatch && !currentWeek) {
-            flushIntro();
-            elements.push(
-              <div key={`bullet-${j}`} style={{fontFamily:F.serif, fontSize:15, lineHeight:1.7, color:C.ink, marginBottom:6, paddingLeft:16, position:"relative"}}>
-                <span style={{position:"absolute", left:0, color:C.orange, fontFamily:F.mono, fontSize:12}}>→</span>
-                {line.replace(/^[-→]\s*/, "")}
-              </div>
-            );
-          } else if (ruleMatch && !currentWeek) {
-            flushIntro();
-            elements.push(
-              <div key={`rule-${j}`} style={{display:"flex", gap:12, padding:"12px 0", borderBottom:`0.5px solid ${C.border}`}}>
-                <span style={{fontFamily:F.display, fontSize:24, color:C.orange, minWidth:28, lineHeight:1}}>{ruleMatch[1].padStart(2,"0")}</span>
-                <div style={{fontFamily:F.serif, fontSize:15, lineHeight:1.6, color:C.ink, flex:1}}>{ruleMatch[2]}</div>
-              </div>
-            );
-          } else if (menuHeaderMatch) {
-            flushWeek(); flushIntro();
-            elements.push(
-              <div key={`menu-${j}`} style={{fontFamily:F.mono, fontSize:10, letterSpacing:2, textTransform:"uppercase", color:C.orange, fontWeight:600, margin:"18px 0 10px", paddingTop:12, borderTop:`0.5px solid ${C.border}`}}>{line}</div>
-            );
-          } else {
-            // Continuation of current section
-            if (currentWeek && currentSection === "shift") {
-              currentWeek.shift = (currentWeek.shift + " " + line).trim();
-            } else if (currentWeek && currentSection === "notice") {
-              currentWeek.notice = (currentWeek.notice + " " + line).trim();
-            } else if (!currentWeek) {
-              introText.push(line);
-            }
-          }
-        }
-        flushWeek();
-        flushIntro();
-        return elements;
-      };
-
-      // Determine which sections open by default
-      // Keep it minimal — only Your Pattern + Your Numbers + Week 1 open
-      const titleLower = title?.toLowerCase() || "";
-      const isPattern = titleLower.includes("pattern");
-      const isWeek1 = titleLower.includes("week 1");
-      const isOneThing = titleLower.includes("one thing");
-      const openByDefault = isPattern || isNumbers || isWeek1 || isOneThing;
-
-      // Summary styling — consistent for all sections
-      const summaryStyle = {
-        fontFamily: F.mono,
-        fontSize: 10,
-        fontWeight: 600,
-        letterSpacing: 2,
-        textTransform: "uppercase",
-        color: C.orange,
-        cursor: "pointer",
-        marginBottom: 16,
-        borderBottom: `1.5px solid ${C.ink}`,
-        paddingBottom: 10,
-        listStyle: "none",
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-      };
-
-      const expandHint = <span style={{color:C.muted, fontWeight:400, fontSize:9, letterSpacing:1}}>TAP TO EXPAND/COLLAPSE</span>;
-
-      // YOUR NUMBERS section — collapsible with dimension callout
-      if (isNumbers && scores) {
-        const topDims = Object.entries(scores.dims).sort((a,b)=>b[1].raw-a[1].raw).slice(0,3);
-        return (
-          <details key={i} open={openByDefault} style={{marginBottom:28}}>
-            <summary style={summaryStyle}>
-              <Quote>{title}</Quote>
-              {expandHint}
-            </summary>
-            <div style={{fontFamily:F.serif, fontSize:15, lineHeight:1.8, color:C.ink}}>{fmt(body)}</div>
-            <div style={{marginTop:16, padding:"12px 16px", background:C.light, borderLeft:`2px solid ${C.orange}`}}>
-              <Lbl orange style={{display:"block", marginBottom:8, fontSize:9}}>Hover the dimension name to learn more</Lbl>
-              {topDims.map(([k,v],idx)=>(<div key={k} style={{fontFamily:F.serif, fontSize:14, marginBottom:6, lineHeight:1.6}}><span style={{fontFamily:F.mono, fontSize:10, color:C.orange, marginRight:8}}>{String(idx+1).padStart(2,"0")}</span><PlanDim dimKey={k} score={v.raw} max={v.max} /></div>))}
-            </div>
-          </details>
+      if (rule) {
+        elements.push(
+          <div key={j} style={{display:"flex", gap:12, padding:"10px 0", borderBottom:`0.5px solid ${C.border}`}}>
+            <span style={{fontFamily:F.display, fontSize:22, color:C.orange, minWidth:26, lineHeight:1}}>{rule[1].padStart(2,"0")}</span>
+            <div style={{fontFamily:F.serif, fontSize:14.5, lineHeight:1.6, color:C.ink, flex:1}}>{rule[2]}</div>
+          </div>
+        );
+      } else if (bullet) {
+        elements.push(
+          <div key={j} style={{fontFamily:F.serif, fontSize:14.5, lineHeight:1.6, color:C.ink, marginBottom:5, paddingLeft:16, position:"relative"}}>
+            <span style={{position:"absolute", left:0, color:C.orange, fontFamily:F.mono, fontSize:11}}>→</span>
+            {line.replace(/^[-→]\s*/, "")}
+          </div>
+        );
+      } else if (menuHeader) {
+        elements.push(
+          <div key={j} style={{fontFamily:F.mono, fontSize:10, letterSpacing:2, textTransform:"uppercase", color:C.orange, fontWeight:600, margin:"16px 0 8px", paddingTop:10, borderTop:`0.5px solid ${C.border}`}}>{line}</div>
+        );
+      } else {
+        elements.push(
+          <div key={j} style={{fontFamily:F.serif, fontSize:15, lineHeight:1.75, color:C.ink, marginBottom:8}}>{line}</div>
         );
       }
-
-      // All other sections — collapsible with consistent styling
-      return (
-        <details key={i} open={openByDefault} style={{marginBottom:28}}>
-          <summary style={summaryStyle}>
-            <Quote>{title}</Quote>
-            {expandHint}
-          </summary>
-          <div>{fmt(body)}</div>
-        </details>
-      );
-    });
+    }
+    return elements;
   }
+
 
   // ═══ ADMIN ═══
   if (mode === "adminLogin") return (<div style={{...pg, maxWidth:420, display:"flex", flexDirection:"column", justifyContent:"center"}} ref={topRef}><Lbl orange>Admin access</Lbl><div style={{height:16}}/><input type="password" value={adminPw} onChange={e=>setAdminPw(e.target.value)} placeholder="Password" style={{...inputStyle, fontFamily:F.mono, fontSize:13, marginBottom:12}}/><button onClick={async()=>{if(adminPw==="noorah2026"){setSubs(await loadSubmissions());setMode("admin")}else alert("Wrong")}} style={btnStyle()}>Enter</button><button onClick={()=>setMode("start")} style={{...btnStyle(false), background:"transparent", color:C.muted, border:"none", marginTop:8, cursor:"pointer", fontSize:10}}>← Back</button></div>);
@@ -1004,36 +1029,228 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
   </div>);
 
   // ═══ PLAN ═══
-  if (mode === "plan") return (<div style={{...pg, maxWidth:620}} ref={topRef}>
-    <div style={{textAlign:"center", paddingBottom:20, borderBottom:`2px solid ${C.ink}`, marginBottom:24}}>
-      <Lbl orange style={{display:"block", marginBottom:8}}>Noorah</Lbl>
-      <h1 style={{fontFamily:F.display, fontSize:36, letterSpacing:2}}>{name.toUpperCase()}'S 8-WEEK PLAN</h1>
-      <Lbl style={{display:"block", marginTop:8}}>Score: {scores?.total}/100 · {scores?.sev?.toUpperCase()} · 56 days · {new Date().toLocaleDateString()}</Lbl>
-    </div>
-    <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:0, border:`0.5px solid ${C.border}`, marginBottom:20}}>
-      {[{w:"Week 1-2",p:"The fast"},{w:"Week 3-4",p:"The rebuild"},{w:"Week 5-6",p:"The return"},{w:"Week 7-8",p:"The anchor"}].map((ph,i)=>(<div key={i} style={{padding:"12px 16px", borderRight:i%2===0?`0.5px solid ${C.border}`:"none", borderBottom:i<2?`0.5px solid ${C.border}`:"none"}}><Lbl orange style={{fontSize:9}}>{ph.w}</Lbl><div style={{fontFamily:F.serif, fontSize:14, marginTop:2}}>{ph.p}</div></div>))}
-    </div>
-    <div className="no-print" style={{display:"flex", gap:12, marginBottom:20, justifyContent:"flex-end"}}>
-      <button onClick={()=>document.querySelectorAll('details').forEach(d=>d.open=true)} style={{background:"transparent", border:`0.5px solid ${C.border}`, padding:"6px 12px", fontFamily:F.mono, fontSize:9, letterSpacing:2, textTransform:"uppercase", color:C.muted, cursor:"pointer"}}>Expand all</button>
-      <button onClick={()=>document.querySelectorAll('details').forEach(d=>d.open=false)} style={{background:"transparent", border:`0.5px solid ${C.border}`, padding:"6px 12px", fontFamily:F.mono, fontSize:9, letterSpacing:2, textTransform:"uppercase", color:C.muted, cursor:"pointer"}}>Collapse all</button>
-    </div>
-    {renderPlan()}
-    <div className="no-print" style={{borderTop:`2px solid ${C.ink}`, paddingTop:20, marginTop:16, display:"flex", gap:8}}>
-      <button onClick={()=>{document.querySelectorAll('details').forEach(d=>d.open=true); setTimeout(()=>window.print(), 300);}} style={{...btnStyle(), flex:1}} onMouseEnter={e=>e.target.style.background=C.orange} onMouseLeave={e=>e.target.style.background=C.ink}>Print / Save PDF</button>
-      <button onClick={()=>{setMode("start");setName("");setEmail("");setAns({});setFollowupAnswers({});setScreentimeData(null);setScores(null);setPlan("");setQi(0);setShowPart2Intro(false)}} style={{flex:1, padding:14, fontFamily:F.mono, fontSize:12, letterSpacing:2, textTransform:"uppercase", background:"transparent", color:C.muted, border:`0.5px solid ${C.border}`, cursor:"pointer"}}>Done</button>
-    </div>
-    <Lbl className="no-print" style={{display:"block", textAlign:"center", marginTop:20, fontSize:8, color:C.border}}>Generated by Noorah · The digital intent company · {new Date().getFullYear()}</Lbl>
-    <style>{`
-      @media print {
-        details { page-break-inside: avoid; }
-        details > summary { list-style: none !important; }
-        details[open] > summary span:last-child { display: none !important; }
-        .no-print { display: none !important; }
-        .week-card { page-break-inside: avoid !important; break-inside: avoid !important; }
-        body { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-      }
-    `}</style>
-  </div>);
+  if (mode === "plan") {
+    const parsed = parsePlan();
+    const topDimName = scores?.top ? (DIM_INFO[scores.top]?.n || "") : "";
+    // Find the current week (lowest numbered expanded week, else week 1)
+    const currentWeekNum = parsed.weeks.length > 0 ? Math.min(...Array.from(expandedWeeks)) || 1 : 1;
+    const currentWeek = parsed.weeks.find(w => w.num === currentWeekNum) || parsed.weeks[0];
+    // Determine current phase based on current week
+    const phaseMap = [
+      {weeks:[1,2], label:"The fast"},
+      {weeks:[3,4], label:"The rebuild"},
+      {weeks:[5,6], label:"The return"},
+      {weeks:[7,8], label:"The anchor"},
+    ];
+    const getPhaseForWeek = (n) => phaseMap.findIndex(p => p.weeks.includes(n));
+    const currentPhaseIdx = getPhaseForWeek(currentWeekNum);
+    // Rotate today's focus through current week's rhythm
+    const todayIdx = new Date().getDate() % Math.max(1, currentWeek?.rhythm?.length || 1);
+    const todaysFocus = currentWeek?.rhythm?.[todayIdx] || currentWeek?.shift || "";
+
+    const toggleWeek = (num) => {
+      setExpandedWeeks(prev => {
+        const next = new Set(prev);
+        if (next.has(num)) next.delete(num); else next.add(num);
+        return next;
+      });
+    };
+
+    return (<div style={{...pg, maxWidth:640}} ref={topRef}>
+      {/* ═══ HEADER ═══ */}
+      <div style={{textAlign:"center", paddingBottom:18, borderBottom:`2px solid ${C.ink}`, marginBottom:20}}>
+        <Lbl orange style={{display:"block", marginBottom:6}}>Noorah</Lbl>
+        <h1 style={{fontFamily:F.display, fontSize:34, letterSpacing:2, lineHeight:1}}>{name.toUpperCase()}'S 8-WEEK PLAN</h1>
+        <Lbl style={{display:"block", marginTop:6, fontSize:9}}>Score {scores?.total}/100 · {scores?.sev?.toUpperCase()} · {new Date().toLocaleDateString()}</Lbl>
+      </div>
+
+      {/* ═══ HERO CARD — dark, score + this week's focus ═══ */}
+      {currentWeek && (
+        <div className="hero-card" style={{background:C.ink, color:C.bg, padding:"26px 24px", marginBottom:24, position:"relative", borderLeft:`4px solid ${C.orange}`}}>
+          <div style={{position:"absolute", top:-9, left:18, background:C.bg, padding:"0 8px", fontFamily:F.mono, fontSize:9, letterSpacing:3, color:C.orange, fontWeight:600}}>THIS WEEK</div>
+
+          <div style={{display:"flex", gap:20, alignItems:"flex-start", marginBottom:18, flexWrap:"wrap"}}>
+            {/* LEFT: Name + score + top pattern */}
+            <div style={{flex:"1 1 200px", minWidth:180}}>
+              <div style={{fontFamily:F.mono, fontSize:10, letterSpacing:2.5, color:C.orange, marginBottom:4}}>{name.toUpperCase()}</div>
+              <div style={{fontFamily:F.display, fontSize:72, lineHeight:.85, color:C.bg, letterSpacing:-3}}>{scores?.total}</div>
+              <div style={{fontFamily:F.mono, fontSize:11, color:"rgba(245,240,232,0.55)", marginTop:2}}>/100 · {scores?.sev?.toUpperCase()}</div>
+              {topDimName && (
+                <div style={{display:"inline-block", marginTop:14, padding:"4px 10px", background:"rgba(232,93,43,0.2)", color:C.orange, fontFamily:F.mono, fontSize:9, letterSpacing:2, fontWeight:600, border:`0.5px solid ${C.orange}`}}>
+                  ▲ TOP PATTERN — {topDimName.toUpperCase()}
+                </div>
+              )}
+            </div>
+            {/* RIGHT: this week's shift */}
+            <div style={{flex:"1 1 240px", minWidth:200, paddingLeft:18, borderLeft:`0.5px dashed rgba(245,240,232,0.2)`}}>
+              <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2.5, color:C.orange, fontWeight:600, marginBottom:6}}>WEEK {currentWeek.num} → {(currentWeek.title || "").toUpperCase()}</div>
+              <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2, color:"rgba(245,240,232,0.5)", marginBottom:8}}>THIS WEEK'S SHIFT</div>
+              <div style={{fontFamily:F.serif, fontSize:16, lineHeight:1.5, color:C.bg, marginBottom:14}}>{currentWeek.shift}</div>
+              <button onClick={()=>{
+                if (!expandedWeeks.has(currentWeek.num)) toggleWeek(currentWeek.num);
+                setTimeout(()=>{document.getElementById(`week-${currentWeek.num}`)?.scrollIntoView({behavior:"smooth", block:"start"});}, 80);
+              }} style={{padding:"10px 16px", background:C.orange, color:C.bg, fontFamily:F.mono, fontSize:10, letterSpacing:2, fontWeight:600, border:"none", cursor:"pointer"}}>START WITH WEEK {currentWeek.num} →</button>
+            </div>
+          </div>
+
+          {/* Today's focus strip */}
+          {todaysFocus && (
+            <div style={{paddingTop:14, borderTop:`0.5px dashed rgba(245,240,232,0.2)`, display:"flex", alignItems:"center", gap:12, flexWrap:"wrap"}}>
+              <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2, color:C.orange, fontWeight:600, flexShrink:0}}>TODAY →</div>
+              <div style={{fontFamily:F.serif, fontSize:14, fontStyle:"italic", color:"rgba(245,240,232,0.85)", lineHeight:1.4}}>{todaysFocus}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ═══ PHASE GRID with current highlighted ═══ */}
+      <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:0, border:`0.5px solid ${C.border}`, marginBottom:24}}>
+        {phaseMap.map((ph,i)=>(
+          <div key={i} style={{padding:"12px 14px", borderRight:i%2===0?`0.5px solid ${C.border}`:"none", borderBottom:i<2?`0.5px solid ${C.border}`:"none", background:i===currentPhaseIdx?C.card:"transparent"}}>
+            <Lbl orange style={{fontSize:9}}>{`WEEK ${ph.weeks[0]}-${ph.weeks[1]}`}{i===currentPhaseIdx?" · NOW":""}</Lbl>
+            <div style={{fontFamily:F.serif, fontSize:14, marginTop:2, color:i===currentPhaseIdx?C.ink:C.muted, fontStyle:i===currentPhaseIdx?"normal":"italic"}}>{ph.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ═══ JUMP NAV ═══ */}
+      <div className="no-print" style={{display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 0", borderBottom:`0.5px solid ${C.border}`, marginBottom:22, flexWrap:"wrap", gap:8}}>
+        <div style={{fontFamily:F.mono, fontSize:9, letterSpacing:2, color:C.muted}}>JUMP TO:</div>
+        <div style={{display:"flex", gap:10, flexWrap:"wrap"}}>
+          {[
+            {label:"PATTERN", id:"sec-pattern"},
+            {label:"WEEKS", id:"sec-weeks"},
+            {label:"MAP", id:"sec-map"},
+            {label:"RULES", id:"sec-rules"},
+            {label:"ONE THING", id:"sec-onething"},
+          ].map((item,i)=>(
+            <span key={i} style={{display:"inline-flex", alignItems:"center", gap:10}}>
+              <button onClick={()=>document.getElementById(item.id)?.scrollIntoView({behavior:"smooth"})} style={{background:"transparent", border:"none", padding:0, color:C.muted, fontFamily:F.mono, fontSize:9, letterSpacing:1.5, cursor:"pointer", fontWeight:500}} onMouseEnter={e=>e.target.style.color=C.orange} onMouseLeave={e=>e.target.style.color=C.muted}>{item.label}</button>
+              {i<4 && <span style={{color:C.border}}>·</span>}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* ═══ EXPAND/COLLAPSE CONTROLS ═══ */}
+      <div className="no-print" style={{display:"flex", gap:8, marginBottom:16, justifyContent:"flex-end"}}>
+        <button onClick={()=>{
+          setExpandedWeeks(new Set(parsed.weeks.map(w=>w.num)));
+          document.querySelectorAll('details').forEach(d=>d.open=true);
+        }} style={{background:"transparent", border:`0.5px solid ${C.border}`, padding:"6px 12px", fontFamily:F.mono, fontSize:9, letterSpacing:2, textTransform:"uppercase", color:C.muted, cursor:"pointer"}}>Expand all</button>
+        <button onClick={()=>{
+          setExpandedWeeks(new Set());
+          document.querySelectorAll('details').forEach(d=>d.open=false);
+        }} style={{background:"transparent", border:`0.5px solid ${C.border}`, padding:"6px 12px", fontFamily:F.mono, fontSize:9, letterSpacing:2, textTransform:"uppercase", color:C.muted, cursor:"pointer"}}>Collapse all</button>
+      </div>
+
+      {/* ═══ YOUR PATTERN ═══ */}
+      {parsed.pattern && (
+        <details open id="sec-pattern" style={{marginBottom:24}}>
+          <summary style={{fontFamily:F.mono, fontSize:10, fontWeight:600, letterSpacing:2, textTransform:"uppercase", color:C.orange, cursor:"pointer", marginBottom:14, borderBottom:`1.5px solid ${C.ink}`, paddingBottom:10, listStyle:"none", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+            <Quote>{parsed.pattern.title}</Quote>
+            <span className="no-print" style={{color:C.muted, fontWeight:400, fontSize:9, letterSpacing:1}}>TAP TO TOGGLE</span>
+          </summary>
+          <div style={{fontFamily:F.serif, fontSize:15, lineHeight:1.75, color:C.ink}}>{parsed.pattern.body}</div>
+        </details>
+      )}
+
+      {/* ═══ YOUR NUMBERS ═══ */}
+      {parsed.numbers && scores && (
+        <details open id="sec-numbers" style={{marginBottom:24}}>
+          <summary style={{fontFamily:F.mono, fontSize:10, fontWeight:600, letterSpacing:2, textTransform:"uppercase", color:C.orange, cursor:"pointer", marginBottom:14, borderBottom:`1.5px solid ${C.ink}`, paddingBottom:10, listStyle:"none", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+            <Quote>{parsed.numbers.title}</Quote>
+            <span className="no-print" style={{color:C.muted, fontWeight:400, fontSize:9, letterSpacing:1}}>TAP TO TOGGLE</span>
+          </summary>
+          <div style={{fontFamily:F.serif, fontSize:15, lineHeight:1.75, color:C.ink}}>{formatBody(parsed.numbers.body)}</div>
+          <div style={{marginTop:14, padding:"12px 16px", background:C.light, borderLeft:`2px solid ${C.orange}`}}>
+            <Lbl orange style={{display:"block", marginBottom:8, fontSize:9}}>Hover the dimension name to learn more</Lbl>
+            {Object.entries(scores.dims).sort((a,b)=>b[1].raw-a[1].raw).slice(0,3).map(([k,v],idx)=>(
+              <div key={k} style={{fontFamily:F.serif, fontSize:14, marginBottom:6, lineHeight:1.6}}>
+                <span style={{fontFamily:F.mono, fontSize:10, color:C.orange, marginRight:8}}>{String(idx+1).padStart(2,"0")}</span>
+                <PlanDim dimKey={k} score={v.raw} max={v.max} />
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+
+      {/* ═══ WEEKS SECTION ═══ */}
+      {parsed.weeks.length > 0 && (
+        <div id="sec-weeks" style={{marginBottom:28}}>
+          <div style={{fontFamily:F.mono, fontSize:10, fontWeight:600, letterSpacing:2, textTransform:"uppercase", color:C.orange, marginBottom:14, borderBottom:`1.5px solid ${C.ink}`, paddingBottom:10}}>
+            <Quote>The 8 weeks</Quote>
+          </div>
+          {parsed.weeks.map(week => (
+            <div key={week.num} id={`week-${week.num}`}>
+              <WeekCard
+                week={week}
+                expanded={expandedWeeks.has(week.num)}
+                onToggle={()=>toggleWeek(week.num)}
+                isCurrent={week.num === currentWeekNum && expandedWeeks.has(week.num)}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ═══ YOUR TWO-MINUTE MAP ═══ */}
+      {parsed.twoMinuteMap && (
+        <details id="sec-map" style={{marginBottom:24}}>
+          <summary style={{fontFamily:F.mono, fontSize:10, fontWeight:600, letterSpacing:2, textTransform:"uppercase", color:C.orange, cursor:"pointer", marginBottom:14, borderBottom:`1.5px solid ${C.ink}`, paddingBottom:10, listStyle:"none", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+            <Quote>{parsed.twoMinuteMap.title}</Quote>
+            <span className="no-print" style={{color:C.muted, fontWeight:400, fontSize:9, letterSpacing:1}}>TAP TO TOGGLE</span>
+          </summary>
+          <div>{formatBody(parsed.twoMinuteMap.body)}</div>
+        </details>
+      )}
+
+      {/* ═══ YOUR SEVEN ═══ */}
+      {parsed.seven && (
+        <details id="sec-rules" style={{marginBottom:24}}>
+          <summary style={{fontFamily:F.mono, fontSize:10, fontWeight:600, letterSpacing:2, textTransform:"uppercase", color:C.orange, cursor:"pointer", marginBottom:14, borderBottom:`1.5px solid ${C.ink}`, paddingBottom:10, listStyle:"none", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+            <Quote>{parsed.seven.title}</Quote>
+            <span className="no-print" style={{color:C.muted, fontWeight:400, fontSize:9, letterSpacing:1}}>TAP TO TOGGLE</span>
+          </summary>
+          <div>{formatBody(parsed.seven.body)}</div>
+        </details>
+      )}
+
+      {/* ═══ ONE THING ═══ */}
+      {parsed.oneThing && (
+        <details open id="sec-onething" style={{marginBottom:24}}>
+          <summary style={{fontFamily:F.mono, fontSize:10, fontWeight:600, letterSpacing:2, textTransform:"uppercase", color:C.orange, cursor:"pointer", marginBottom:14, borderBottom:`1.5px solid ${C.ink}`, paddingBottom:10, listStyle:"none", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+            <Quote>{parsed.oneThing.title}</Quote>
+            <span className="no-print" style={{color:C.muted, fontWeight:400, fontSize:9, letterSpacing:1}}>TAP TO TOGGLE</span>
+          </summary>
+          <div style={{fontFamily:F.serif, fontSize:16, lineHeight:1.75, color:C.ink, fontStyle:"italic"}}>{parsed.oneThing.body}</div>
+        </details>
+      )}
+
+      {/* ═══ ACTION BUTTONS ═══ */}
+      <div className="no-print" style={{borderTop:`2px solid ${C.ink}`, paddingTop:20, marginTop:16, display:"flex", gap:8}}>
+        <button onClick={()=>{
+          setExpandedWeeks(new Set(parsed.weeks.map(w=>w.num)));
+          document.querySelectorAll('details').forEach(d=>d.open=true);
+          setTimeout(()=>window.print(), 350);
+        }} style={{...btnStyle(), flex:1}} onMouseEnter={e=>e.target.style.background=C.orange} onMouseLeave={e=>e.target.style.background=C.ink}>Print / Save PDF</button>
+        <button onClick={()=>{setMode("start");setName("");setEmail("");setAns({});setFollowupAnswers({});setScreentimeData(null);setScores(null);setPlan("");setQi(0);setShowPart2Intro(false);setExpandedWeeks(new Set([1]))}} style={{flex:1, padding:14, fontFamily:F.mono, fontSize:12, letterSpacing:2, textTransform:"uppercase", background:"transparent", color:C.muted, border:`0.5px solid ${C.border}`, cursor:"pointer"}}>Done</button>
+      </div>
+      <Lbl className="no-print" style={{display:"block", textAlign:"center", marginTop:20, fontSize:8, color:C.border}}>Generated by Noorah · The digital intent company · {new Date().getFullYear()}</Lbl>
+
+      <style>{`
+        @media print {
+          details { page-break-inside: avoid; }
+          details > summary { list-style: none !important; }
+          details[open] > summary span:last-child { display: none !important; }
+          .no-print { display: none !important; }
+          .week-card { page-break-inside: avoid !important; break-inside: avoid !important; margin-bottom: 16px !important; }
+          .hero-card { break-inside: avoid !important; page-break-inside: avoid !important; }
+          body { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        }
+      `}</style>
+    </div>);
+  }
 
   return null;
 }
