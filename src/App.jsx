@@ -497,7 +497,7 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
     const result = {
       pattern: null,       // {title, body}
       numbers: null,       // {title, body}
-      weeks: [],           // [{num, sectionTitle, title, shift, rhythm[], notice}]
+      weeks: [],           // [{num, title, shift, rhythm[], notice}]
       twoMinuteMap: null,  // {title, body}
       seven: null,         // {title, body}
       oneThing: null,      // {title, body}
@@ -510,17 +510,29 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
       const body = lines.slice(1).join("\n").trim();
       const tLower = title.toLowerCase();
 
+      // Individual WEEK section (e.g., "### WEEK 1" or "### WEEK 1 — The Fast Begins")
+      const weekHeaderMatch = title.match(/^WEEK\s+(\d+)(?:\s*[—–-]\s*(.*))?$/i);
+      if (weekHeaderMatch) {
+        const week = parseSingleWeek(
+          parseInt(weekHeaderMatch[1]),
+          (weekHeaderMatch[2] || "").trim(),
+          body
+        );
+        if (week) result.weeks.push(week);
+        return;
+      }
+
       if (tLower.includes("pattern")) {
         result.pattern = { title, body };
       } else if (tLower.includes("number")) {
         result.numbers = { title, body };
       } else if (tLower.includes("week")) {
-        // This is a WEEK section — parse the week card(s) inside
-        const weeks = parseWeekCards(body, title);
+        // Fallback: multiple weeks under one header — scan the body
+        const weeks = parseMultipleWeeks(body);
         result.weeks.push(...weeks);
-      } else if (tLower.includes("two-minute") || tLower.includes("two minute") || tLower.includes("2-minute") || tLower.includes("map") || tLower.includes("dopamine")) {
+      } else if (tLower.includes("two-minute") || tLower.includes("two minute") || tLower.includes("2-minute") || (tLower.includes("map") && !tLower.includes("rules"))) {
         result.twoMinuteMap = { title, body };
-      } else if (tLower.includes("seven") || tLower.includes("rules")) {
+      } else if (tLower.includes("seven") || tLower.includes("rules") || tLower.includes("constitution")) {
         result.seven = { title, body };
       } else if (tLower.includes("one thing")) {
         result.oneThing = { title, body };
@@ -529,62 +541,129 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
       }
     });
 
+    // Sort weeks by number
+    result.weeks.sort((a, b) => a.num - b.num);
+    // Dedupe by week number (keep first occurrence)
+    const seen = new Set();
+    result.weeks = result.weeks.filter(w => {
+      if (seen.has(w.num)) return false;
+      seen.add(w.num);
+      return true;
+    });
+
     return result;
   }
 
-  // Parse a week section body into structured week card(s)
-  function parseWeekCards(body, sectionTitle) {
+  // Parse a single WEEK section's body into a structured week object
+  function parseSingleWeek(num, headerTitle, body) {
+    const rawLines = body.split("\n");
+    const week = {
+      num,
+      title: headerTitle || "",
+      shift: "",
+      rhythm: [],
+      notice: "",
+    };
+    let section = null;
+
+    for (let i = 0; i < rawLines.length; i++) {
+      const line = rawLines[i].trim();
+      if (!line) { section = null; continue; }
+
+      const titleMatch = line.match(/^TITLE:?\s*(.*)/i);
+      const shiftMatch = line.match(/^SHIFT:?\s*(.*)/i);
+      const rhythmMatch = line.match(/^RHYTHM:?\s*(.*)/i);
+      const noticeMatch = line.match(/^NOTICE:?\s*(.*)/i);
+      const innerWeekMatch = line.match(/^Week\s+\d+\s*[—–-]\s*(.*)$/i);
+      const bulletMatch = line.startsWith("-") || line.startsWith("→") || line.startsWith("•");
+
+      if (titleMatch) {
+        if (titleMatch[1].trim()) week.title = titleMatch[1].trim();
+        section = null;
+      } else if (innerWeekMatch && !week.title) {
+        week.title = innerWeekMatch[1].trim();
+        section = null;
+      } else if (shiftMatch) {
+        section = "shift";
+        if (shiftMatch[1].trim()) week.shift = shiftMatch[1].trim();
+      } else if (rhythmMatch) {
+        section = "rhythm";
+        if (rhythmMatch[1].trim() && rhythmMatch[1].trim().startsWith("-")) {
+          week.rhythm.push(rhythmMatch[1].trim().replace(/^-\s*/, ""));
+        }
+      } else if (noticeMatch) {
+        section = "notice";
+        if (noticeMatch[1].trim()) week.notice = noticeMatch[1].trim();
+      } else if (bulletMatch && section === "rhythm") {
+        week.rhythm.push(line.replace(/^[-→•]\s*/, ""));
+      } else if (section === "shift") {
+        week.shift = (week.shift + " " + line).trim();
+      } else if (section === "notice") {
+        week.notice = (week.notice + " " + line).trim();
+      }
+    }
+
+    // Only return if we got at least a shift OR rhythm
+    if (week.shift || week.rhythm.length > 0) return week;
+    return null;
+  }
+
+  // Parse body that contains MULTIPLE weeks (fallback when AI combines sections)
+  function parseMultipleWeeks(body) {
     const rawLines = body.split("\n");
     const weeks = [];
     let current = null;
     let section = null;
-    let introCollected = [];
 
     const pushWeek = () => {
-      if (current) {
+      if (current && (current.shift || current.rhythm.length > 0)) {
         weeks.push(current);
-        current = null;
       }
+      current = null;
     };
 
     for (let i = 0; i < rawLines.length; i++) {
       const line = rawLines[i].trim();
       if (!line) { section = null; continue; }
 
+      // Match "Week N — Title" OR "Week N" OR "WEEK N"
       const weekMatch = line.match(/^Week\s+(\d+)\s*[—–-]\s*(.*)$/i) || line.match(/^Week\s+(\d+)\s*$/i);
+      const titleMatch = line.match(/^TITLE:?\s*(.*)/i);
       const shiftMatch = line.match(/^SHIFT:?\s*(.*)/i);
-      const rhythmHeader = line.match(/^RHYTHM:?\s*(.*)/i);
+      const rhythmMatch = line.match(/^RHYTHM:?\s*(.*)/i);
       const noticeMatch = line.match(/^NOTICE:?\s*(.*)/i);
-      const bulletMatch = line.startsWith("-") || line.startsWith("→");
+      const bulletMatch = line.startsWith("-") || line.startsWith("→") || line.startsWith("•");
 
       if (weekMatch) {
         pushWeek();
         current = {
           num: parseInt(weekMatch[1]),
-          sectionTitle,
           title: (weekMatch[2] || "").trim(),
           shift: "",
           rhythm: [],
           notice: "",
         };
         section = null;
+      } else if (titleMatch && current) {
+        if (titleMatch[1].trim()) current.title = titleMatch[1].trim();
+        section = null;
       } else if (shiftMatch && current) {
         section = "shift";
         if (shiftMatch[1].trim()) current.shift = shiftMatch[1].trim();
-      } else if (rhythmHeader && current) {
+      } else if (rhythmMatch && current) {
         section = "rhythm";
-        if (rhythmHeader[1].trim() && rhythmHeader[1].trim().startsWith("-")) {
-          current.rhythm.push(rhythmHeader[1].trim().replace(/^-\s*/, ""));
+        if (rhythmMatch[1].trim() && rhythmMatch[1].trim().startsWith("-")) {
+          current.rhythm.push(rhythmMatch[1].trim().replace(/^-\s*/, ""));
         }
       } else if (noticeMatch && current) {
         section = "notice";
         if (noticeMatch[1].trim()) current.notice = noticeMatch[1].trim();
       } else if (bulletMatch && current && section === "rhythm") {
-        current.rhythm.push(line.replace(/^[-→]\s*/, ""));
-      } else if (current) {
-        // Continuation of whatever section we're in
-        if (section === "shift") current.shift = (current.shift + " " + line).trim();
-        else if (section === "notice") current.notice = (current.notice + " " + line).trim();
+        current.rhythm.push(line.replace(/^[-→•]\s*/, ""));
+      } else if (current && section === "shift") {
+        current.shift = (current.shift + " " + line).trim();
+      } else if (current && section === "notice") {
+        current.notice = (current.notice + " " + line).trim();
       }
     }
     pushWeek();
