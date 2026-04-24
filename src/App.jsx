@@ -155,7 +155,12 @@ function calc(a, screentimeData) {
 }
 
 function cleanText(text) {
-  return text.replace(/\*\*(.+?)\*\*/g, "$1").replace(/\*(.+?)\*/g, "$1").replace(/^#+\s*/gm, "").replace(/^—+$/gm, "").trim();
+  return text
+    .replace(/\*\*(.+?)\*\*/g, "$1")      // remove bold
+    .replace(/\*(.+?)\*/g, "$1")          // remove italic
+    .replace(/^####+\s*/gm, "")           // remove h4+ (but keep ### h3)
+    .replace(/^—+$/gm, "")                // remove divider lines
+    .trim();
 }
 
 const Lbl = ({children, orange, style}) => <span style={{fontFamily:F.mono, fontSize:10, letterSpacing:3, textTransform:"uppercase", color:orange?C.orange:C.muted, fontWeight:500, ...style}}>{children}</span>;
@@ -493,63 +498,110 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
   // PARSE PLAN INTO STRUCTURED DATA
   // ═══════════════════════════════════════
   function parsePlan() {
-    const sections = plan.split(/###\s*/g).filter(s=>s.trim());
+    // Known section header patterns (case-insensitive, match whole line)
+    const SECTION_PATTERNS = [
+      { re: /^YOUR\s+PATTERN$/i, key: "pattern" },
+      { re: /^YOUR\s+NUMBERS$/i, key: "numbers" },
+      { re: /^WEEK\s+(\d+)(?:\s*[—–-]\s*(.*))?$/i, key: "week" },
+      { re: /^YOUR\s+TWO[-\s]*MINUTE\s+MAP$/i, key: "map" },
+      { re: /^YOUR\s+SEVEN$/i, key: "seven" },
+      { re: /^ONE\s+THING$/i, key: "onething" },
+      { re: /^YOUR\s+RULES$/i, key: "seven" },
+      { re: /^DIGITAL\s+CONSTITUTION$/i, key: "seven" },
+    ];
+
+    const lines = plan.split("\n");
+    const sections = [];  // [{key, title, num?, body[]}]
+    let current = null;
+
+    for (let i = 0; i < lines.length; i++) {
+      // Strip optional ### prefix before matching
+      const rawLine = lines[i].replace(/^#{1,6}\s*/, "").trim();
+
+      let matched = null;
+      for (const pat of SECTION_PATTERNS) {
+        const m = rawLine.match(pat.re);
+        if (m) {
+          matched = { key: pat.key, title: rawLine, num: pat.key === "week" ? parseInt(m[1]) : null, weekTitle: pat.key === "week" ? (m[2] || "").trim() : null };
+          break;
+        }
+      }
+
+      if (matched) {
+        // Special case: if we hit a NEW Week header right after a previous empty Week header
+        // (e.g., "WEEK 1 — THE FAST BEGINS" was the phase label, then "Week 1 — Delete Reddit Now" is the real week)
+        // → replace the previous one instead of pushing a new section
+        if (
+          matched.key === "week" &&
+          current &&
+          current.key === "week" &&
+          current.num === matched.num &&
+          current.body.filter(l => l.trim()).length === 0
+        ) {
+          // Previous was empty (just the phase label) — replace its title with this one
+          current = { ...matched, body: [] };
+        } else {
+          if (current) sections.push(current);
+          current = { ...matched, body: [] };
+        }
+      } else if (current) {
+        current.body.push(lines[i]);
+      }
+      // If no current section yet and no match, skip (preamble text)
+    }
+    if (current) sections.push(current);
+
+    // Now assemble result from sections
     const result = {
-      pattern: null,       // {title, body}
-      numbers: null,       // {title, body}
-      weeks: [],           // [{num, title, shift, rhythm[], notice}]
-      twoMinuteMap: null,  // {title, body}
-      seven: null,         // {title, body}
-      oneThing: null,      // {title, body}
-      other: [],           // any unrecognized sections
+      pattern: null,
+      numbers: null,
+      weeks: [],
+      twoMinuteMap: null,
+      seven: null,
+      oneThing: null,
+      other: [],
     };
 
     sections.forEach(sec => {
-      const lines = sec.trim().split("\n");
-      const title = (lines[0] || "").trim();
-      const body = lines.slice(1).join("\n").trim();
-      const tLower = title.toLowerCase();
-
-      // Individual WEEK section (e.g., "### WEEK 1" or "### WEEK 1 — The Fast Begins")
-      const weekHeaderMatch = title.match(/^WEEK\s+(\d+)(?:\s*[—–-]\s*(.*))?$/i);
-      if (weekHeaderMatch) {
-        const week = parseSingleWeek(
-          parseInt(weekHeaderMatch[1]),
-          (weekHeaderMatch[2] || "").trim(),
-          body
-        );
-        if (week) result.weeks.push(week);
-        return;
-      }
-
-      if (tLower.includes("pattern")) {
-        result.pattern = { title, body };
-      } else if (tLower.includes("number")) {
-        result.numbers = { title, body };
-      } else if (tLower.includes("week")) {
-        // Fallback: multiple weeks under one header — scan the body
-        const weeks = parseMultipleWeeks(body);
-        result.weeks.push(...weeks);
-      } else if (tLower.includes("two-minute") || tLower.includes("two minute") || tLower.includes("2-minute") || (tLower.includes("map") && !tLower.includes("rules"))) {
-        result.twoMinuteMap = { title, body };
-      } else if (tLower.includes("seven") || tLower.includes("rules") || tLower.includes("constitution")) {
-        result.seven = { title, body };
-      } else if (tLower.includes("one thing")) {
-        result.oneThing = { title, body };
-      } else {
-        result.other.push({ title, body });
+      const body = sec.body.join("\n").trim();
+      switch (sec.key) {
+        case "pattern":
+          result.pattern = { title: sec.title, body };
+          break;
+        case "numbers":
+          result.numbers = { title: sec.title, body };
+          break;
+        case "week":
+          const week = parseSingleWeek(sec.num, sec.weekTitle, body);
+          if (week) result.weeks.push(week);
+          break;
+        case "map":
+          result.twoMinuteMap = { title: sec.title, body };
+          break;
+        case "seven":
+          result.seven = { title: sec.title, body };
+          break;
+        case "onething":
+          result.oneThing = { title: sec.title, body };
+          break;
+        default:
+          result.other.push({ title: sec.title, body });
       }
     });
 
-    // Sort weeks by number
+    // Sort weeks by number, dedupe (prefer ones with content)
     result.weeks.sort((a, b) => a.num - b.num);
-    // Dedupe by week number (keep first occurrence)
-    const seen = new Set();
-    result.weeks = result.weeks.filter(w => {
-      if (seen.has(w.num)) return false;
-      seen.add(w.num);
-      return true;
+    const byNum = {};
+    result.weeks.forEach(w => {
+      const existing = byNum[w.num];
+      // Prefer the week with more content
+      const score = (w.shift ? 10 : 0) + w.rhythm.length + (w.notice ? 5 : 0);
+      const existingScore = existing ? ((existing.shift ? 10 : 0) + existing.rhythm.length + (existing.notice ? 5 : 0)) : -1;
+      if (!existing || score > existingScore) {
+        byNum[w.num] = w;
+      }
     });
+    result.weeks = Object.values(byNum).sort((a, b) => a.num - b.num);
 
     return result;
   }
@@ -606,68 +658,6 @@ Write their plan now. Reference their specific words and numbers. NO markdown bo
     // Only return if we got at least a shift OR rhythm
     if (week.shift || week.rhythm.length > 0) return week;
     return null;
-  }
-
-  // Parse body that contains MULTIPLE weeks (fallback when AI combines sections)
-  function parseMultipleWeeks(body) {
-    const rawLines = body.split("\n");
-    const weeks = [];
-    let current = null;
-    let section = null;
-
-    const pushWeek = () => {
-      if (current && (current.shift || current.rhythm.length > 0)) {
-        weeks.push(current);
-      }
-      current = null;
-    };
-
-    for (let i = 0; i < rawLines.length; i++) {
-      const line = rawLines[i].trim();
-      if (!line) { section = null; continue; }
-
-      // Match "Week N — Title" OR "Week N" OR "WEEK N"
-      const weekMatch = line.match(/^Week\s+(\d+)\s*[—–-]\s*(.*)$/i) || line.match(/^Week\s+(\d+)\s*$/i);
-      const titleMatch = line.match(/^TITLE:?\s*(.*)/i);
-      const shiftMatch = line.match(/^SHIFT:?\s*(.*)/i);
-      const rhythmMatch = line.match(/^RHYTHM:?\s*(.*)/i);
-      const noticeMatch = line.match(/^NOTICE:?\s*(.*)/i);
-      const bulletMatch = line.startsWith("-") || line.startsWith("→") || line.startsWith("•");
-
-      if (weekMatch) {
-        pushWeek();
-        current = {
-          num: parseInt(weekMatch[1]),
-          title: (weekMatch[2] || "").trim(),
-          shift: "",
-          rhythm: [],
-          notice: "",
-        };
-        section = null;
-      } else if (titleMatch && current) {
-        if (titleMatch[1].trim()) current.title = titleMatch[1].trim();
-        section = null;
-      } else if (shiftMatch && current) {
-        section = "shift";
-        if (shiftMatch[1].trim()) current.shift = shiftMatch[1].trim();
-      } else if (rhythmMatch && current) {
-        section = "rhythm";
-        if (rhythmMatch[1].trim() && rhythmMatch[1].trim().startsWith("-")) {
-          current.rhythm.push(rhythmMatch[1].trim().replace(/^-\s*/, ""));
-        }
-      } else if (noticeMatch && current) {
-        section = "notice";
-        if (noticeMatch[1].trim()) current.notice = noticeMatch[1].trim();
-      } else if (bulletMatch && current && section === "rhythm") {
-        current.rhythm.push(line.replace(/^[-→•]\s*/, ""));
-      } else if (current && section === "shift") {
-        current.shift = (current.shift + " " + line).trim();
-      } else if (current && section === "notice") {
-        current.notice = (current.notice + " " + line).trim();
-      }
-    }
-    pushWeek();
-    return weeks;
   }
 
   // ═══════════════════════════════════════
